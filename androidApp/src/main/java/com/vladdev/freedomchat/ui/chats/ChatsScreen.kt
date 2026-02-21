@@ -65,14 +65,14 @@ fun ChatsScreen(
                 .padding(16.dp)
         ) {
 
-            Text("Chats", style = MaterialTheme.typography.headlineMedium)
+            Text("FreedomChat", style = MaterialTheme.typography.headlineMedium)
 
             Spacer(Modifier.height(16.dp))
 
             // ----- Requests Section -----
             if (viewModel.incomingRequests.isNotEmpty()) {
 
-                Text("Incoming requests")
+                Text("Входящие запросы")
 
                 Spacer(Modifier.height(8.dp))
 
@@ -90,11 +90,11 @@ fun ChatsScreen(
 
                             Row {
                                 Button(onClick = { viewModel.acceptRequest(request.id) }) {
-                                    Text("Accept")
+                                    Text("Принять")
                                 }
 
                                 Button(onClick = { viewModel.rejectRequest(request.id) }) {
-                                    Text("Reject")
+                                    Text("Отклонить")
                                 }
                             }
                         }
@@ -106,7 +106,7 @@ fun ChatsScreen(
             }
 
             // ----- Chats Section -----
-            Text("Your chats")
+            Text("Чаты")
 
             Spacer(Modifier.height(8.dp))
 
@@ -124,7 +124,7 @@ fun ChatsScreen(
                         }
                 ) {
                     Text(
-                        text = otherUser?.username ?: "Chat",
+                        text = otherUser?.username ?: "Чат",
                         modifier = Modifier.padding(16.dp)
                     )
                 }

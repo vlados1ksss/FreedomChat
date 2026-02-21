@@ -24,20 +24,20 @@ fun CreateChatDialog(
             TextButton(
                 onClick = { onCreate(username) }
             ) {
-                Text("Send")
+                Text("Отправить запрос")
             }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) {
-                Text("Cancel")
+                Text("Отмена")
             }
         },
-        title = { Text("Create chat") },
+        title = { Text("Создать чат") },
         text = {
             OutlinedTextField(
                 value = username,
                 onValueChange = { username = it },
-                label = { Text("Username") }
+                label = { Text("Имя собеседника") }
             )
         }
     )

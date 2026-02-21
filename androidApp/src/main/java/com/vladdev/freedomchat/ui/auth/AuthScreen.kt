@@ -41,14 +41,14 @@ fun AuthScreen(
         verticalArrangement = Arrangement.Center
     ) {
 
-        Text("Messenger", style = MaterialTheme.typography.headlineMedium)
+        Text("FreedomChat", style = MaterialTheme.typography.headlineMedium)
 
         Spacer(modifier = Modifier.height(32.dp))
 
         OutlinedTextField(
             value = viewModel.username,
             onValueChange = viewModel::onUsernameChange,
-            label = { Text("Username") },
+            label = { Text("Имя пользователя") },
             modifier = Modifier.fillMaxWidth()
         )
 
@@ -57,7 +57,7 @@ fun AuthScreen(
         OutlinedTextField(
             value = viewModel.password,
             onValueChange = viewModel::onPasswordChange,
-            label = { Text("Password") },
+            label = { Text("Пароль") },
             modifier = Modifier.fillMaxWidth(),
             visualTransformation = PasswordVisualTransformation()
         )
@@ -68,7 +68,7 @@ fun AuthScreen(
             onClick = { viewModel.login() },
             modifier = Modifier.fillMaxWidth()
         ) {
-            Text("Login")
+            Text("Войти")
         }
 
         Spacer(modifier = Modifier.height(8.dp))
@@ -77,7 +77,7 @@ fun AuthScreen(
             onClick = { viewModel.register() },
             modifier = Modifier.fillMaxWidth()
         ) {
-            Text("Register")
+            Text("Зарегистрироваться")
         }
 
         viewModel.errorMessage?.let {
