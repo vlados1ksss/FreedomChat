@@ -1,7 +1,9 @@
 package com.vladdev.freedomchat
 
+import android.content.Context
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
+import androidx.compose.ui.platform.LocalContext
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
@@ -16,7 +18,8 @@ import com.vladdev.shared.chats.ChatRepository
 fun AppNavGraph(authRepository: AuthRepository, chatRepository: ChatRepository) {
 
     val navController = rememberNavController()
-
+    val context = LocalContext.current
+    val sharedPrefs = context.getSharedPreferences("auth", Context.MODE_PRIVATE)
     NavHost(
         navController = navController,
         startDestination = "auth"
@@ -48,11 +51,11 @@ fun AppNavGraph(authRepository: AuthRepository, chatRepository: ChatRepository) 
         }
 
         composable("chat/{chatId}") { backStackEntry ->
-
             val chatId = backStackEntry.arguments?.getString("chatId")!!
-
-            ChatScreen(chatId)
+            val currentUserId = sharedPrefs.getString("userId", null)
+            ChatScreen(chatId = chatId, repository = chatRepository, currentUserId = currentUserId)
         }
+
 
     }
 }

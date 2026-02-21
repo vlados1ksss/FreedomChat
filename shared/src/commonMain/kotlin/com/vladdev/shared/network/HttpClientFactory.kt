@@ -3,13 +3,17 @@ package com.vladdev.shared.network
 import com.vladdev.shared.auth.AuthRepository
 import com.vladdev.shared.storage.TokenStorage
 import io.ktor.client.HttpClient
-import io.ktor.client.plugins.HttpSend
+import io.ktor.client.plugins.auth.Auth
+import io.ktor.client.plugins.auth.providers.BearerTokens
+import io.ktor.client.plugins.auth.providers.bearer
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
-import io.ktor.http.HttpHeaders
-import io.ktor.http.HttpStatusCode
 import io.ktor.serialization.kotlinx.json.json
-import io.ktor.client.request.HttpRequestBuilder
-import jdk.javadoc.internal.tool.Main.execute
+import io.ktor.client.plugins.logging.*
+import io.ktor.client.plugins.websocket.*
+import io.ktor.websocket.*
+import kotlin.time.Duration.Companion.seconds
+
+
 
 object HttpClientFactory {
 
@@ -23,37 +27,47 @@ object HttpClientFactory {
             install(ContentNegotiation) {
                 json()
             }
+            install(WebSockets) {
+                pingInterval = 20.seconds
+                maxFrameSize = Long.MAX_VALUE
+            }
+
+            install(Logging) {
+                logger = Logger.DEFAULT
+                level = LogLevel.ALL
+            }
+
 
             expectSuccess = false
 
-            install(HttpSend) {
+            install(Auth) {
 
-                install(HttpSend) {
-                    intercept { request ->
+                bearer {
 
-                        val accessToken = storage.getAccessToken()
-                        if (accessToken != null) {
-                            request.headers[HttpHeaders.Authorization] = "Bearer $accessToken"
-                        }
+                    loadTokens {
+                        val access = storage.getAccessToken()
+                        val refresh = storage.getRefreshToken()
 
-                        val originalCall = execute(request)
+                        if (access != null && refresh != null) {
+                            BearerTokens(access, refresh)
+                        } else null
+                    }
 
-                        if (originalCall.response.status == HttpStatusCode.Unauthorized) {
-                            val refreshed = authRepository.refreshTokens()
+                    refreshTokens {
 
-                            if (refreshed) {
-                                val newAccess = storage.getAccessToken()
-                                request.headers[HttpHeaders.Authorization] = "Bearer $newAccess"
-                                return@intercept execute(request)
-                            }
-                        }
+                        val success = authRepository.refreshTokens()
 
-                        originalCall
+                        if (!success) return@refreshTokens null
+
+                        val newAccess = storage.getAccessToken()
+                        val newRefresh = storage.getRefreshToken()
+
+                        if (newAccess != null && newRefresh != null) {
+                            BearerTokens(newAccess, newRefresh)
+                        } else null
                     }
                 }
             }
         }
     }
 }
-
-
