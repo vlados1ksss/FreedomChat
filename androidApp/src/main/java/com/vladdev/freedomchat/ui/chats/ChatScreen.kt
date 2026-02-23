@@ -1,108 +1,356 @@
 package com.vladdev.freedomchat.ui.chats
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.ScrollableDefaults
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Send
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.IconButtonDefaults
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
+import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.viewmodel.compose.viewModel
+import com.vladdev.freedomchat.R
+import com.vladdev.freedomchat.ui.theme.FreedomChatTheme
 import com.vladdev.shared.chats.ChatRepository
+import kotlinx.coroutines.launch
+import kotlinx.serialization.InternalSerializationApi
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, InternalSerializationApi::class)
 @Composable
 fun ChatScreen(
     chatId: String,
     repository: ChatRepository,
-    currentUserId: String?
+    interlocutorUsername: String,
+    currentUserId: String?,
+    onBack: () -> Unit
 ) {
-    // Создаём ViewModel
-    val viewModel = remember { ChatViewModel(repository, chatId, currentUserId) }
+    val viewModel: ChatViewModel = viewModel(
+        key = "chat_$chatId",
+        factory = ChatViewModelFactory(repository, chatId, currentUserId)
+    )
+
     val listState = rememberLazyListState()
-
-    Scaffold(
-        topBar = {
-            TopAppBar(title = { Text("Чат ${chatId}") })
-        }
-    ) { padding ->
-
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
-        ) {
-
-            // ---------------- Messages List ----------------
-            LazyColumn(
-                modifier = Modifier.weight(1f).fillMaxWidth(),
-                state = listState,
-                reverseLayout = true
-            ) {
-                items(viewModel.messages.reversed()) { message ->
-                    MessageItem(
-                        message = message
-                    )
-                    Spacer(modifier = Modifier.height(4.dp))
-                }
-            }
-
-            // ---------------- Input Field ----------------
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(8.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                TextField(
-                    value = viewModel.newMessage,
-                    onValueChange = { viewModel.onMessageChange(it) },
-                    modifier = Modifier.weight(1f),
-                    placeholder = { Text("Введите сообщение...") },
-                    singleLine = true
-                )
-
-                IconButton(
-                    onClick = { viewModel.sendMessage() },
-                    modifier = Modifier.padding(start = 8.dp)
-                ) {
-                    Icon(Icons.Default.Send, contentDescription = "Send")
-                }
-            }
-
-            // ---------------- Error Message ----------------
-            viewModel.error?.let {
-                Text(
-                    text = it,
-                    color = Color.Red,
-                    modifier = Modifier.padding(8.dp)
-                )
-            }
+    val messages by viewModel.messages.collectAsState()
+    val scope = rememberCoroutineScope()
+    var showNewMessagePopup by remember { mutableStateOf(false) }
+    val isAtBottom by remember {
+        derivedStateOf {
+            listState.firstVisibleItemIndex == 0
         }
     }
+    val messagesCount = messages.size
 
-    // ---------------- Auto scroll to bottom on new message ----------------
-    LaunchedEffect(viewModel.messages.size) {
-        if (viewModel.messages.isNotEmpty()) {
+    LaunchedEffect(messages.size) {
+        if (messages.isEmpty()) return@LaunchedEffect
+
+        val lastMessage = messages.first()
+
+        if (viewModel.isScrollToBottomPending) {
             listState.animateScrollToItem(0)
+            viewModel.onScrolledToBottom()
+            showNewMessagePopup = false
+        } else if (!isAtBottom) {
+            if (lastMessage.senderId != currentUserId) {
+                showNewMessagePopup = true
+            }
         }
     }
+    LaunchedEffect(isAtBottom) {
+        if (isAtBottom) showNewMessagePopup = false
+    }
+    FreedomChatTheme {
+        Scaffold(
+            containerColor = MaterialTheme.colorScheme.background,
+            topBar = {
+                ChatTopBarRounded(
+                    name = interlocutorUsername,
+                    isConnected = viewModel.isConnected,
+                    onBack = onBack
+                )
+            },
+            modifier = Modifier.imePadding()
+        ) { padding ->
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(padding)
+            ) {
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(bottom = 72.dp),
+                    state = listState,
+                    reverseLayout = true,
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
+                ) {
+                    items(
+                        items = messages,
+                        key = { it.id }
+                    ) { message ->
+                        MessageItem(
+                            message = message,
+                            currentUserId = currentUserId,
+                            onDelete = { id, forAll -> viewModel.deleteMessage(id, forAll) }
+                        )
+                    }
+                }
+
+                viewModel.error?.let {
+                    ErrorBanner(
+                        message = it,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
+                    )
+                }
+
+                AnimatedVisibility(
+                    visible = showNewMessagePopup,
+                    enter = fadeIn() + slideInVertically(initialOffsetY = { it }),
+                    exit = fadeOut() + slideOutVertically(targetOffsetY = { it }),
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(bottom = 80.dp)
+                ) {
+                    OutlinedButton(
+                        onClick = {
+                            scope.launch {
+                                listState.animateScrollToItem(0)
+                                showNewMessagePopup = false
+                            }
+                        },
+                        shape = CircleShape,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.primaryContainer,
+                            contentColor = MaterialTheme.colorScheme.onPrimaryContainer
+                        ),
+                        elevation = ButtonDefaults.buttonElevation(defaultElevation = 4.dp)
+                    ) {
+                        Icon(painterResource(R.drawable.ic_right), contentDescription = null)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Новые сообщения")
+                    }
+                }
+
+                ChatInputField(
+                    value = viewModel.newMessage,
+                    onValueChange = viewModel::onMessageChange,
+                    onSend = {
+                        if (viewModel.newMessage.isNotBlank()) {
+                            viewModel.sendMessage()
+                            scope.launch {
+                                listState.animateScrollToItem(0)
+                            }
+                        }
+                    },
+                    modifier = Modifier.align(Alignment.BottomCenter)
+                )
+            }
+        }
+
+        LaunchedEffect(messagesCount) {
+            if (viewModel.isScrollToBottomPending || isAtBottom) {
+                listState.animateScrollToItem(0)
+                if (viewModel.isScrollToBottomPending) {
+                    viewModel.onScrolledToBottom()
+                }
+            }
+        }
+
+        LaunchedEffect(viewModel.lastSentMessageId) {
+            viewModel.lastSentMessageId?.let {
+                listState.animateScrollToItem(0)
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ChatTopBarRounded(
+    name: String,
+    isConnected: Boolean,
+    onBack: () -> Unit
+) {
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceContainer,
+        shadowElevation = 4.dp,
+        shape = RoundedCornerShape(bottomStart = 24.dp, bottomEnd = 24.dp)
+    ) {
+        TopAppBar(
+            title = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    UserAvatar(name = name, size = 40.dp)
+                    Spacer(Modifier.width(12.dp))
+                    Column {
+                        Text(
+                            text = name,
+                            style = MaterialTheme.typography.titleMedium,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(
+                                modifier = Modifier
+                                    .size(6.dp)
+                                    .clip(CircleShape)
+                                    .background(
+                                        if (isConnected) MaterialTheme.colorScheme.tertiary
+                                        else MaterialTheme.colorScheme.secondary
+                                    )
+                            )
+                            Spacer(Modifier.width(4.dp))
+                            Text(
+                                text = if (isConnected) "В сети" else "Подключение...",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                            )
+                        }
+                    }
+                }
+            },
+            navigationIcon = {
+                IconButton(onClick = onBack) {
+                    Icon(
+                        painterResource(R.drawable.arrow_back),
+                        contentDescription = "Назад",
+                        tint = MaterialTheme.colorScheme.onSurface
+                    )
+                }
+            },
+            actions = {
+                IconButton(onClick = {}) {
+                    Icon(
+                        painterResource(R.drawable.more_vert),
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurface
+                    )
+                }
+            },
+            colors = TopAppBarDefaults.topAppBarColors(
+                containerColor = Color.Transparent
+            ),
+            scrollBehavior = null
+        )
+    }
+}
+
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ChatInputField(
+    value: String,
+    onValueChange: (String) -> Unit,
+    onSend: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val isSendEnabled = value.isNotBlank()
+
+    val textFieldColors = OutlinedTextFieldDefaults.colors(
+        focusedContainerColor = MaterialTheme.colorScheme.surfaceContainer,
+        unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainer,
+        focusedBorderColor = MaterialTheme.colorScheme.primary,
+        unfocusedBorderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f),
+        cursorColor = MaterialTheme.colorScheme.primary,
+        focusedTextColor = MaterialTheme.colorScheme.onSurface,
+        unfocusedTextColor = MaterialTheme.colorScheme.onSurface,
+        focusedPlaceholderColor = MaterialTheme.colorScheme.outline,
+        unfocusedPlaceholderColor = MaterialTheme.colorScheme.outline
+    )
+
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .imePadding()
+            .padding(horizontal = 12.dp, vertical = 8.dp)
+    ){
+        OutlinedTextField(
+            value = value,
+            onValueChange = onValueChange,
+            modifier = Modifier
+                .weight(1f)
+                .animateContentSize(),
+            shape = RoundedCornerShape(24.dp),
+            placeholder = { Text("Сообщение...") },
+            colors = textFieldColors,
+            singleLine = false,
+            maxLines = 5
+        )
+
+        Spacer(Modifier.width(8.dp))
+
+        FilledIconButton(
+            onClick = onSend,
+            enabled = isSendEnabled,
+            modifier = Modifier
+                .padding(bottom = 4.dp)
+                .size(48.dp),
+            colors = IconButtonDefaults.filledIconButtonColors(
+                containerColor = MaterialTheme.colorScheme.primary,
+                contentColor = MaterialTheme.colorScheme.onPrimary
+            )
+        ) {
+            Icon(
+                painterResource(R.drawable.send),
+                contentDescription = "Отправить"
+            )
+        }
+    }
+    Spacer(Modifier.height(8.dp))
 }

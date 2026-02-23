@@ -9,8 +9,10 @@ import com.vladdev.shared.chats.ChatRepository
 import com.vladdev.shared.chats.dto.ChatDto
 import com.vladdev.shared.chats.dto.ChatRequestDto
 import kotlinx.coroutines.launch
+import kotlinx.serialization.InternalSerializationApi
 import kotlin.collections.emptyList
 
+@OptIn(InternalSerializationApi::class)
 class ChatsViewModel(
     private val repository: ChatRepository
 ) : ViewModel() {

@@ -9,23 +9,32 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.vladdev.freedomchat.MainApplication
 import com.vladdev.shared.chats.ChatRepository
+import com.vladdev.shared.chats.IncomingDelete
+import com.vladdev.shared.chats.IncomingMessage
+import com.vladdev.shared.chats.IncomingStatus
 import com.vladdev.shared.chats.dto.MessageDto
+import com.vladdev.shared.chats.dto.MessageStatusDto
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.serialization.InternalSerializationApi
 import java.util.UUID
 
+@OptIn(InternalSerializationApi::class)
 class ChatViewModel(
     private val repository: ChatRepository,
     private val chatId: String,
     private val currentUserId: String?
 ) : ViewModel() {
 
-    private val _messages = mutableStateListOf<MessageDto>()
-    val messages: List<MessageDto> = _messages
+    private val _messages = MutableStateFlow<List<MessageDto>>(emptyList())
+    val messages = _messages.asStateFlow()
 
     var newMessage by mutableStateOf("")
         private set
@@ -33,13 +42,18 @@ class ChatViewModel(
     var error by mutableStateOf<String?>(null)
         private set
 
-    private var wsJob: Job? = null
-
     var isConnected by mutableStateOf(false)
         private set
 
+    var lastSentMessageId by mutableStateOf<String?>(null)
+        private set
+
+    private var wsJob: Job? = null
+    var isScrollToBottomPending by mutableStateOf(false)
+        private set
 
     init {
+        loadHistory()
         connectWebSocket()
     }
 
@@ -54,14 +68,29 @@ class ChatViewModel(
         newMessage = ""
 
         viewModelScope.launch {
-            Log.d(MainApplication.LogTags.CHAT_VM, "Sending message: $messageToSend")
-
             try {
                 repository.sendMessage(chatId, messageToSend)
-                Log.d(MainApplication.LogTags.CHAT_VM, "Message sent to repository")
+                isScrollToBottomPending = true
             } catch (e: Exception) {
-                Log.e(MainApplication.LogTags.CHAT_VM, "SEND ERROR", e)
                 error = "Не удалось отправить сообщение"
+            }
+        }
+    }
+
+    fun onScrolledToBottom() {
+        isScrollToBottomPending = false
+    }
+
+    private fun loadHistory() {
+        viewModelScope.launch {
+            try {
+                val history = repository.getMessages(chatId)
+
+                _messages.value =
+                    history.sortedByDescending { it.createdAt }
+
+            } catch (e: Exception) {
+                Log.e(MainApplication.LogTags.CHAT_VM, "HISTORY ERROR", e)
             }
         }
     }
@@ -69,54 +98,109 @@ class ChatViewModel(
     private fun connectWebSocket() {
         wsJob?.cancel()
 
-
         wsJob = viewModelScope.launch {
-            Log.d(MainApplication.LogTags.CHAT_VM, "Connecting WS chat=$chatId")
-            try {
-                repository.openChat(chatId, viewModelScope)
-                Log.d(MainApplication.LogTags.CHAT_VM, "WS openChat success")
-                isConnected = true
 
-                repository.messagesFlow(chatId)
-                    .collect { message ->
-                        Log.d(
-                            MainApplication.LogTags.CHAT_VM,
-                            "Message received id=${message.id}"
-                        )
-                        if (_messages.none { it.id == message.id }) {
-                            _messages.add(message)
-                            _messages.sortBy { it.createdAt }
+            launch {
+                repository.eventsFlow(chatId).collect { event ->
+
+                    when (event) {
+
+                        is IncomingMessage -> {
+
+                            _messages.update { old ->
+
+                                if (old.any { it.id == event.message.id })
+                                    return@update old
+
+                                val insertIndex = old.indexOfFirst {
+                                    it.createdAt < event.message.createdAt
+                                }.let { if (it == -1) old.size else it }
+
+                                buildList {
+                                    addAll(old)
+                                    add(insertIndex, event.message)
+                                }
+                            }
+
+                            if (event.message.senderId != currentUserId) {
+                                currentUserId?.let {
+                                    repository.sendRead(
+                                        chatId,
+                                        event.message.id,
+                                        it
+                                    )
+                                }
+                            }
+                        }
+
+                        is IncomingStatus -> {
+
+                            _messages.update { old ->
+                                old.map { msg ->
+                                    if (msg.id != event.messageId) return@map msg
+
+                                    val newStatuses =
+                                        msg.statuses
+                                            .filter { it.userId != event.userId } +
+                                                MessageStatusDto(
+                                                    event.messageId,
+                                                    event.userId,
+                                                    event.status
+                                                )
+
+                                    msg.copy(statuses = newStatuses)
+                                }
+                            }
+                        }
+
+                        is IncomingDelete -> {
+
+                            _messages.update { old ->
+
+                                if (event.deleteForAll) {
+                                    old.map {
+                                        if (it.id == event.messageId)
+                                            it.copy(
+                                                encryptedContent = "Сообщение удалено",
+                                                deletedForAll = true
+                                            )
+                                        else it
+                                    }
+                                } else {
+                                    old.filterNot { it.id == event.messageId }
+                                }
+                            }
                         }
                     }
+                }
+            }
 
+            try {
+                repository.openChat(chatId, viewModelScope)
+                isConnected = true
             } catch (e: Exception) {
                 isConnected = false
-                Log.e(MainApplication.LogTags.CHAT_VM, "WS ERROR", e)
-                error = "Ошибка подключения к чату"
             }
         }
     }
 
-
-//    fun deleteMessage(messageId: String) {
-//        viewModelScope.launch {
-//            repository.deleteMessage(chatId, messageId).onSuccess {
-//                _messages.removeAll { it.id == messageId }
-//            }.onFailure {
-//                error = "Не удалось удалить сообщение"
-//            }
-//        }
-//    }
-
+    fun deleteMessage(messageId: String, forAll: Boolean) {
+        viewModelScope.launch {
+            try {
+                repository.deleteMessage(chatId, messageId, forAll)
+            } catch (e: Exception) {
+                error = "Не удалось удалить сообщение"
+            }
+        }
+    }
 
     override fun onCleared() {
         wsJob?.cancel()
 
-        CoroutineScope(Dispatchers.IO).launch {
+        viewModelScope.launch(Dispatchers.IO) {
             repository.closeChat(chatId)
         }
 
         super.onCleared()
     }
-
 }
