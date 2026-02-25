@@ -4,6 +4,7 @@ import com.vladdev.shared.chats.dto.ChatDto
 import com.vladdev.shared.chats.dto.ChatRequestDto
 import com.vladdev.shared.chats.dto.MessageDto
 import com.vladdev.shared.chats.dto.MessageStatus
+import com.vladdev.shared.chats.dto.SearchUserResponse
 import com.vladdev.shared.chats.dto.WsDeleteEvent
 import com.vladdev.shared.chats.dto.WsMessageEvent
 import com.vladdev.shared.chats.dto.WsStatusEvent
@@ -40,6 +41,12 @@ class ChatRepository(
     }
     suspend fun loadChats(): Result<List<ChatDto>> =
         runCatching { api.getChats() }
+
+    suspend fun searchUser(username: String): Result<SearchUserResponse> =
+        runCatching { api.searchUser(username) }
+
+    suspend fun createDirectChat(userId: String): Result<String> =
+        runCatching { api.createDirectChat(userId).chatId }
 
     suspend fun loadRequests(): Result<List<ChatRequestDto>> =
         runCatching { api.getIncomingRequests() }

@@ -1,23 +1,15 @@
 package com.vladdev.shared.storage
 
 import android.content.Context
+import androidx.core.content.edit
 
-class AndroidUserIdStorage(
-    private val context: Context
-) : UserIdStorage {
+class AndroidUserIdStorage(context: Context) : UserIdStorage {
+    private val prefs = context.getSharedPreferences("user", Context.MODE_PRIVATE)
 
-    private val prefs =
-        context.getSharedPreferences("auth", Context.MODE_PRIVATE)
+    override suspend fun saveUID(uid: String) { prefs.edit { putString("uid", uid) } }
+    override suspend fun getUID(): String? = prefs.getString("uid", null)
+    override suspend fun clear() { prefs.edit { clear() } }
 
-    override suspend fun saveUID(userId: String) {
-        prefs.edit().putString("userId", userId).apply()
-    }
-
-    override suspend fun getUID(): String? {
-        return prefs.getString("userId", null)
-    }
-
-    override suspend fun clearUID() {
-        prefs.edit().clear().apply()
-    }
+    // Синхронная версия для вызова вне корутин
+    fun getUIDSync(): String? = prefs.getString("uid", null)
 }

@@ -66,23 +66,25 @@ import kotlinx.serialization.InternalSerializationApi
 @Composable
 fun ChatsScreen(
     repository: ChatRepository,
-    onOpenChat: (chatId: String, username: String) -> Unit,
+    onOpenChat: (chatId: String, name: String) -> Unit,
+    currentUserId: String?,
     onOpenProfile: () -> Unit
 ) {
-    val context = LocalContext.current
-    val sharedPrefs = context.getSharedPreferences("auth", android.content.Context.MODE_PRIVATE)
-    val currentUserId = sharedPrefs.getString("userId", null)
+
+//    val context = LocalContext.current
+//    val sharedPrefs = context.getSharedPreferences("auth", android.content.Context.MODE_PRIVATE)
+//    val currentUserId = sharedPrefs.getString("userId", null)
 
     val viewModel = remember { ChatsViewModel(repository) }
-    var showDialog by remember { mutableStateOf(false) }
+    var showSearch by remember { mutableStateOf(false) }
 
     FreedomChatTheme {
         Scaffold(
             containerColor = MaterialTheme.colorScheme.background,
             floatingActionButton = {
                 ExtendedFloatingActionButton(
-                    onClick = { showDialog = true },
-                    icon = { Icon(painterResource(R.drawable.new_chat), contentDescription = null) },
+                    onClick = { showSearch = true },
+                    icon = { Icon(painterResource(R.drawable.new_chat), null) },
                     text = { Text("Новый чат") },
                     containerColor = MaterialTheme.colorScheme.primary,
                     contentColor = MaterialTheme.colorScheme.onPrimary,
@@ -92,33 +94,19 @@ fun ChatsScreen(
         ) { padding ->
 
             LazyColumn(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(padding),
+                modifier = Modifier.fillMaxSize().padding(padding),
                 contentPadding = PaddingValues(bottom = 96.dp)
             ) {
-
                 item {
                     Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 24.dp)
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 24.dp)
                     ) {
-
-                        // 🔹 КНОПКА ПРОФИЛЯ (левый верх)
                         FilledIconButton(
                             onClick = onOpenProfile,
-                            modifier = Modifier
-                                .align(Alignment.TopStart)
-                                .padding(start = 16.dp)
+                            modifier = Modifier.align(Alignment.TopStart).padding(start = 16.dp)
                         ) {
-                            Icon(
-                                painter = painterResource(R.drawable.ic_profile),
-                                contentDescription = "Профиль"
-                            )
+                            Icon(painterResource(R.drawable.ic_profile), "Профиль")
                         }
-
-                        // 🔹 СТАРЫЙ ЗАГОЛОВОК (по центру)
                         Text(
                             text = "FreedomChat",
                             style = MaterialTheme.typography.headlineMedium,
@@ -155,28 +143,34 @@ fun ChatsScreen(
                     item { EmptyChatsPlaceholder() }
                 } else {
                     items(viewModel.chats, key = { it.chatId }) { chat ->
-                        val otherUser = chat.participants.firstOrNull { it.userId != currentUserId }
+                        val other = chat.participants.firstOrNull { it.userId != currentUserId }
                         ChatListItem(
-                            name = otherUser?.username ?: "Чат",
-                            onClick = { onOpenChat(chat.chatId, otherUser?.username ?: "Чат") }
+                            // Показываем name вместо username
+                            name = other?.name ?: other?.username ?: "Чат",
+                            onClick = {
+                                onOpenChat(chat.chatId, other?.name ?: other?.username ?: "Чат")
+                            }
                         )
                     }
                 }
 
                 viewModel.error?.let {
-                    item {
-                        ErrorBanner(message = it, modifier = Modifier.padding(16.dp))
-                    }
+                    item { ErrorBanner(message = it, modifier = Modifier.padding(16.dp)) }
                 }
             }
         }
 
-        if (showDialog) {
-            CreateChatDialog(
-                onDismiss = { showDialog = false },
-                onCreate = {
-                    viewModel.sendRequest(it)
-                    showDialog = false
+        if (showSearch) {
+            SearchUserDialog(
+                viewModel = viewModel,
+                onDismiss = {
+                    showSearch = false
+                    viewModel.clearSearch()
+                },
+                onOpenChat = { chatId, name ->
+                    showSearch = false
+                    viewModel.clearSearch()
+                    onOpenChat(chatId, name)
                 }
             )
         }

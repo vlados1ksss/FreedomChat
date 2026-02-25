@@ -13,7 +13,8 @@ data class ChatRequestDto(
 @InternalSerializationApi @Serializable
 data class ParticipantDto(
     val userId: String,
-    val username: String
+    val username: String,
+    val name: String
 )
 
 @InternalSerializationApi @Serializable
@@ -31,4 +32,18 @@ data class RequestIdResponse(
 @InternalSerializationApi @Serializable
 data class ChatIdResponse(
     val chatId: String
+)
+
+@InternalSerializationApi @Serializable
+data class UserSearchResult(
+    val userId: String,
+    val username: String,
+    val name: String,
+    val status: String
+)
+
+@InternalSerializationApi @Serializable
+data class SearchUserResponse(
+    val user: UserSearchResult? = null,
+    val existingChatId: String? = null
 )

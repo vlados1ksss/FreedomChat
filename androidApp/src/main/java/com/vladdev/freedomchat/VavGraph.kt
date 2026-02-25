@@ -3,36 +3,42 @@ package com.vladdev.freedomchat
 import android.content.Context
 import android.net.Uri
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.platform.LocalContext
+import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.vladdev.freedomchat.ui.auth.AuthScreen
 import com.vladdev.freedomchat.ui.auth.AuthViewModel
 import com.vladdev.freedomchat.ui.chats.ChatScreen
+import com.vladdev.freedomchat.ui.chats.ChatViewModel
 import com.vladdev.freedomchat.ui.chats.ChatsScreen
+import com.vladdev.freedomchat.ui.chats.ChatsViewModel
 import com.vladdev.freedomchat.ui.profile.ProfileScreen
+import com.vladdev.freedomchat.ui.profile.ProfileViewModel
 import com.vladdev.shared.auth.AuthRepository
 import com.vladdev.shared.chats.ChatRepository
+import com.vladdev.shared.user.ProfileRepository
 
 @Composable
-fun AppNavGraph(authRepository: AuthRepository, chatRepository: ChatRepository) {
-
+fun AppNavGraph(app: MainApplication, startDestination: String = "auth") {
     val navController = rememberNavController()
-    val context = LocalContext.current
-    val sharedPrefs = context.getSharedPreferences("auth", Context.MODE_PRIVATE)
-
-    NavHost(
-        navController = navController,
-        startDestination = "auth"
-    ) {
+    LaunchedEffect(Unit) {
+        app.authRepository.sessionExpiredFlow.collect {
+            navController.navigate("auth") {
+                popUpTo(0) { inclusive = true }
+                launchSingleTop = true
+            }
+        }
+    }
+    NavHost(navController = navController, startDestination = startDestination) {
 
         composable("auth") {
-            val viewModel = remember {
-                AuthViewModel(authRepository)
+            val viewModel: AuthViewModel = viewModel {
+                AuthViewModel(app.authRepository)
             }
-
             AuthScreen(
                 viewModel = viewModel,
                 onSuccess = {
@@ -44,43 +50,69 @@ fun AppNavGraph(authRepository: AuthRepository, chatRepository: ChatRepository) 
         }
 
         composable("chats") {
+            val chatRepo = app.chatRepository ?: run {
+                LaunchedEffect(Unit) {
+                    navController.navigate("auth") { popUpTo(0) { inclusive = true } }
+                }
+                return@composable
+            }
 
             ChatsScreen(
-                repository = chatRepository,
-                onOpenChat = { chatId, username ->
-                    navController.navigate("chat/$chatId/${Uri.encode(username)}")
+                repository = chatRepo,
+                currentUserId = app.userIdStorage.getUIDSync(),
+                onOpenChat = { chatId, name ->
+                    navController.navigate("chat/$chatId/${Uri.encode(name)}")
                 },
-                onOpenProfile = {
-                    navController.navigate("profile")
-                }
+                onOpenProfile = { navController.navigate("profile") }
             )
         }
 
-        composable("chat/{chatId}/{username}") { backStackEntry ->
+        composable("chat/{chatId}/{name}") { backStackEntry ->
             val chatId = backStackEntry.arguments?.getString("chatId")!!
-            val username = backStackEntry.arguments?.getString("username")!!
-            val currentUserId = sharedPrefs.getString("userId", null)
+            val name = backStackEntry.arguments?.getString("name")!!
+
+            val chatRepo = app.chatRepository
+            if (chatRepo == null) {
+                LaunchedEffect(Unit) {
+                    navController.navigate("auth") { popUpTo(0) { inclusive = true } }
+                }
+                return@composable
+            }
+
+            // Синхронный вызов — не suspend
+            val currentUserId = app.userIdStorage.getUIDSync()
+
             ChatScreen(
-                repository = chatRepository,
                 chatId = chatId,
-                interlocutorUsername = username,
+                repository = chatRepo,
+                interlocutorUsername = name,
                 currentUserId = currentUserId,
-                onBack = { navController.navigate(route = "chats") }
+                onBack = { navController.popBackStack() }
             )
         }
 
         composable("profile") {
+            val profileRepo = app.profileRepository
+            if (profileRepo == null) {
+                LaunchedEffect(Unit) {
+                    navController.navigate("auth") { popUpTo(0) { inclusive = true } }
+                }
+                return@composable
+            }
+
+            // Ключ — userId, чтобы ViewModel пересоздалась при смене пользователя
+            val userId = app.userIdStorage.getUIDSync()
+            val viewModel: ProfileViewModel = viewModel(key = userId) {
+                ProfileViewModel(profileRepo)
+            }
 
             ProfileScreen(
-
-                onBack = {
-                    navController.popBackStack()
-                },
+                viewModel = viewModel,
+                onBack = { navController.popBackStack() },
                 onLogout = {
-                    sharedPrefs.edit().clear().apply()
-
                     navController.navigate("auth") {
-                        popUpTo("chats") { inclusive = true }
+                        popUpTo(0) { inclusive = true }
+                        launchSingleTop = true
                     }
                 }
             )

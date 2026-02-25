@@ -1,5 +1,6 @@
 package com.vladdev.freedomchat.ui.chats
 
+import android.graphics.drawable.shapes.Shape
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.LocalIndication
@@ -34,11 +35,19 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.geometry.RoundRect
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Outline
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontStyle
+import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.vladdev.freedomchat.R
@@ -48,19 +57,18 @@ import kotlinx.serialization.InternalSerializationApi
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
-@OptIn(ExperimentalFoundationApi::class, InternalSerializationApi::class,
-    ExperimentalFoundationApi::class
-)
+@OptIn(ExperimentalFoundationApi::class, InternalSerializationApi::class)
 @Composable
 fun MessageItem(
     message: MessageDto,
     currentUserId: String?,
+    showTail: Boolean,
     onDelete: (messageId: String, forAll: Boolean) -> Unit
 ) {
     val isOwn = message.senderId == currentUserId
     var showMenu by remember { mutableStateOf(false) }
 
-
+    // statuses / icon logic — оставляем как было
     val statusIconRes = remember(message, currentUserId) {
         if (isOwn) {
             val statuses = message.statuses.filter { it.userId != currentUserId }
@@ -77,25 +85,25 @@ fun MessageItem(
     val textColor = if (isOwn) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSecondaryContainer
 
     val alignment = if (isOwn) Alignment.CenterEnd else Alignment.CenterStart
-
     val maxWidthFraction = 0.7f
 
+    // shape: remember with simple params (not calling composable inside)
+    val bubbleShape = remember(isOwn, showTail) {
+        messageBubbleShape(isOwn, showTail)
+    }
 
     Box(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 8.dp, vertical = 2.dp),
         contentAlignment = alignment
-    )
-
-
-    {
+    ) {
         Surface(
-
-            shape = RoundedCornerShape(18.dp),
+            shape = bubbleShape,
             color = bubbleColor,
             shadowElevation = 1.dp,
-            modifier = Modifier.widthIn(max = LocalConfiguration.current.screenWidthDp.dp * maxWidthFraction)
+            modifier = Modifier
+                .widthIn(max = LocalConfiguration.current.screenWidthDp.dp * maxWidthFraction)
                 .pointerInput(Unit) {
                     detectTapGestures(
                         onLongPress = {
@@ -104,7 +112,12 @@ fun MessageItem(
                     )
                 }
         ) {
-            Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+            Column(
+                modifier = Modifier
+                    .padding(horizontal = 12.dp, vertical = 8.dp)
+                    // немного больше bottom-padding если есть хвост, чтобы не обрезался
+                    .padding(bottom = if (showTail) 8.dp else 0.dp)
+            ) {
                 Text(
                     text = if (message.deletedForAll) "Сообщение удалено" else message.encryptedContent,
                     color = textColor,
@@ -116,12 +129,10 @@ fun MessageItem(
                     modifier = Modifier.align(Alignment.End),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    val timeText by remember(message.createdAt) {
-                        mutableStateOf(
-                            Instant.ofEpochMilli(message.createdAt)
-                                .atZone(ZoneId.systemDefault())
-                                .format(DateTimeFormatter.ofPattern("HH:mm"))
-                        )
+                    val timeText = remember(message.createdAt) {
+                        Instant.ofEpochMilli(message.createdAt)
+                            .atZone(ZoneId.systemDefault())
+                            .format(DateTimeFormatter.ofPattern("HH:mm"))
                     }
                     Text(
                         text = timeText,
@@ -141,6 +152,7 @@ fun MessageItem(
                 }
             }
         }
+
         DropdownMenu(
             expanded = showMenu,
             onDismissRequest = { showMenu = false }
@@ -162,7 +174,28 @@ fun MessageItem(
                 )
             }
         }
-
-
     }
 }
+private fun messageBubbleShape(isOwn: Boolean, showTail: Boolean): RoundedCornerShape {
+    val big = 18.dp
+    val small = 8.dp
+
+    return if (isOwn) {
+        // исходящие — хвостик справа -> уменьшаем нижний правый угол
+        RoundedCornerShape(
+            topStart = big,
+            topEnd = big,
+            bottomStart = big,
+            bottomEnd = if (showTail) small else big
+        )
+    } else {
+        // входящие — хвостик слева -> уменьшаем нижний левый угол
+        RoundedCornerShape(
+            topStart = big,
+            topEnd = big,
+            bottomStart = if (showTail) small else big,
+            bottomEnd = big
+        )
+    }
+}
+

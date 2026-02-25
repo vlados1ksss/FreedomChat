@@ -8,52 +8,81 @@ import com.vladdev.shared.chats.ChatRepository
 import com.vladdev.shared.network.HttpClientFactory
 import com.vladdev.shared.storage.AndroidTokenStorage
 import com.vladdev.shared.storage.AndroidUserIdStorage
+import com.vladdev.shared.user.ProfileApi
+import com.vladdev.shared.user.ProfileRepository
 import io.ktor.client.HttpClient
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.serialization.kotlinx.json.json
 
 class MainApplication : Application() {
 
-    lateinit var httpClient: HttpClient
+    // Постоянные — живут всё время
+    lateinit var tokenStorage: AndroidTokenStorage
+        private set
+    lateinit var userIdStorage: AndroidUserIdStorage
+        private set
     lateinit var authRepository: AuthRepository
-    lateinit var chatRepository: ChatRepository
+        private set
+
+    // Сессионные — пересоздаются при каждом входе
+    var httpClient: HttpClient? = null
+        private set
+    var chatRepository: ChatRepository? = null
+        private set
+    var profileRepository: ProfileRepository? = null
+        private set
 
     override fun onCreate() {
         super.onCreate()
 
-        val tokenStorage = AndroidTokenStorage(this)
-        val userIdStorage = AndroidUserIdStorage(this)
+        tokenStorage = AndroidTokenStorage(this)
+        userIdStorage = AndroidUserIdStorage(this)
 
         val authClient = HttpClient {
             install(ContentNegotiation) { json() }
-            expectSuccess = false
+            expectSuccess = true
         }
 
-        val authApi = AuthApi(authClient)
-
         authRepository = AuthRepository(
-            api = authApi,
+            api = AuthApi(authClient),
             storage = tokenStorage,
             uIdStorage = userIdStorage
         )
+    }
 
-        httpClient = HttpClientFactory.create(
+    // Вызывается после успешного login/register
+    fun createSession() {
+        // Закрываем старую сессию если есть
+        destroySession()
+
+        val client = HttpClientFactory.create(
             storage = tokenStorage,
             authRepository = authRepository
         )
 
-        val chatApi = ChatApi(
-            client = httpClient,
-            tokenStorage = tokenStorage
+        httpClient = client
+        chatRepository = ChatRepository(api = ChatApi(client, tokenStorage))
+        profileRepository = ProfileRepository(
+            api = ProfileApi(client),
+            authRepository = authRepository
         )
 
-        chatRepository = ChatRepository(api = chatApi)
+        println("Session created for user: ${tokenStorage}")
     }
+
+    // Вызывается при logout/delete
+    fun destroySession() {
+        httpClient?.close()
+        httpClient = null
+        chatRepository = null
+        profileRepository = null
+        println("Session destroyed")
+    }
+
     object LogTags {
         const val CHAT_VM = "CHAT_VM"
         const val CHAT_REPO = "CHAT_REPO"
         const val CHAT_API = "CHAT_API"
         const val CHAT_WS = "CHAT_WS"
     }
-
 }

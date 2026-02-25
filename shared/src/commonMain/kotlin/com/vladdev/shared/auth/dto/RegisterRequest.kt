@@ -4,8 +4,9 @@ import kotlinx.serialization.InternalSerializationApi
 import kotlinx.serialization.Serializable
 
 @InternalSerializationApi @Serializable
-data class AuthResponse(
-    val accessToken: String,
-    val refreshToken: String,
-    val userId: String
+data class RegisterRequest(
+    val username: String,
+    val name: String,
+    val email: String,
+    val password: String
 )

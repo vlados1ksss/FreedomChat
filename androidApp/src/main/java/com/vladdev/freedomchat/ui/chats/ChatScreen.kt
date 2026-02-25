@@ -142,13 +142,22 @@ fun ChatScreen(
                     reverseLayout = true,
                     contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
                 ) {
-                    items(
+                    itemsIndexed(
                         items = messages,
-                        key = { it.id }
-                    ) { message ->
+                        key = { _, it -> it.id }
+                    ) { index, message ->
+
+                        // previous (index - 1) is the newer message when reverseLayout = true
+                        val previousMessage = messages.getOrNull(index - 1)
+                        val isOwn = message.senderId == currentUserId
+                        val previousIsSameSender = previousMessage?.senderId == message.senderId
+
+                        val showTail = !previousIsSameSender // true when this is the newest of a sender's run
+
                         MessageItem(
                             message = message,
                             currentUserId = currentUserId,
+                            showTail = showTail,
                             onDelete = { id, forAll -> viewModel.deleteMessage(id, forAll) }
                         )
                     }

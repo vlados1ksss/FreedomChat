@@ -39,12 +39,8 @@ object HttpClientFactory {
                 level = LogLevel.ALL
             }
 
-
-//            expectSuccess = false
-
             install(Auth) {
                 bearer {
-
                     loadTokens {
                         val access = storage.getAccessToken()
                         val refresh = storage.getRefreshToken()
@@ -54,18 +50,25 @@ object HttpClientFactory {
                     }
 
                     sendWithoutRequest { request ->
-                        !request.url.encodedPath.startsWith("/auth")
+                        request.url.encodedPath.startsWith("/auth") ||
+                                request.url.encodedPath == "/refresh"
                     }
 
                     refreshTokens {
+                        // markAsRefreshTokenRequest() говорит Ktor что этот запрос
+                        // не нужно перехватывать повторно если он тоже вернёт 401
+//                        markAsRefreshTokenRequest()
 
                         val success = authRepository.refreshTokens()
-                        if (!success) return@refreshTokens null
-
-                        BearerTokens(
-                            storage.getAccessToken()!!,
-                            storage.getRefreshToken()!!
-                        )
+                        if (!success) {
+                            // Сигналим NavGraph что нужно идти на auth
+                            null
+                        } else {
+                            BearerTokens(
+                                storage.getAccessToken()!!,
+                                storage.getRefreshToken()!!
+                            )
+                        }
                     }
                 }
             }

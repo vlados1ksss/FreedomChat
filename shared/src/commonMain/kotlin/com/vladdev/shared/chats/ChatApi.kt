@@ -6,8 +6,7 @@ import com.vladdev.shared.chats.dto.ChatRequestDto
 import com.vladdev.shared.chats.dto.MessageDto
 import com.vladdev.shared.chats.dto.MessageStatus
 import com.vladdev.shared.chats.dto.RequestIdResponse
-import com.vladdev.shared.chats.dto.SendMessageRequest
-import com.vladdev.shared.chats.dto.SendMessageResponse
+import com.vladdev.shared.chats.dto.SearchUserResponse
 import com.vladdev.shared.chats.dto.WsDeleteEvent
 import com.vladdev.shared.chats.dto.WsMessageEvent
 import com.vladdev.shared.chats.dto.WsStatusEvent
@@ -16,11 +15,9 @@ import io.ktor.client.HttpClient
 import io.ktor.client.call.body
 import io.ktor.client.plugins.websocket.DefaultClientWebSocketSession
 import io.ktor.client.plugins.websocket.webSocketSession
-import io.ktor.client.request.delete
 import io.ktor.client.request.get
+import io.ktor.client.request.parameter
 import io.ktor.client.request.post
-import io.ktor.client.request.setBody
-import io.ktor.client.request.url
 import io.ktor.client.statement.HttpResponse
 import io.ktor.http.encodedPath
 import io.ktor.http.isSuccess
@@ -29,7 +26,6 @@ import io.ktor.websocket.Frame
 import io.ktor.websocket.close
 import io.ktor.websocket.readText
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.cancel
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.serialization.InternalSerializationApi
@@ -45,8 +41,6 @@ class ChatApi(private val client: HttpClient, private val tokenStorage: TokenSto
         encodeDefaults = true
         ignoreUnknownKeys = true
     }
-//    private val baseUrl = "https://f41585cb8b9516.lhr.life"
-//    private val baseWsUrl = "wss://f41585cb8b9516.lhr.life"
     private val baseUrl = "http://192.168.31.191:8080"
     private val baseWsUrl = "ws://192.168.31.191:8080"
     private val wsConnections = mutableMapOf<String, DefaultClientWebSocketSession>()
@@ -55,6 +49,14 @@ class ChatApi(private val client: HttpClient, private val tokenStorage: TokenSto
         if (!status.isSuccess()) throw Exception("HTTP ${status.value}")
         return body()
     }
+
+    suspend fun searchUser(username: String): SearchUserResponse =
+        client.get("$baseUrl/chats/search") {
+            parameter("username", username)
+        }.safeBody()
+
+    suspend fun createDirectChat(userId: String): ChatIdResponse =
+        client.post("$baseUrl/chats/direct/$userId").safeBody()
 
     suspend fun sendRequest(username: String): RequestIdResponse =
         client.post("$baseUrl/chats/request/$username").safeBody()
