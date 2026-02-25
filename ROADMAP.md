@@ -33,8 +33,8 @@
   - service account (администрация)
 
 ### Fixes & Improvements
-- [ ] Refresh tokens
-- [ ] Smooth invisible token refresh (без re-login)
+- [x] Refresh tokens
+- [x] Smooth invisible token refresh (без re-login)
 - [x] Ограничение: только один чат между пользователями
 
 ---
