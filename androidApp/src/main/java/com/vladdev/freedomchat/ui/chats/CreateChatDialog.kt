@@ -45,7 +45,7 @@ import kotlinx.serialization.InternalSerializationApi
 fun SearchUserDialog(
     viewModel: ChatsViewModel,
     onDismiss: () -> Unit,
-    onOpenChat: (chatId: String, name: String) -> Unit
+    onOpenChat: (chatId: String, theirUserId:String,  name: String, status: String) -> Unit
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -112,9 +112,10 @@ fun SearchUserDialog(
                                 onClick = {
                                     viewModel.openOrCreateChat(
                                         userId = result.user!!.userId,
-                                        existingChatId = result.existingChatId,
-                                        onReady = onOpenChat
-                                    )
+                                        existingChatId = result.existingChatId
+                                    ) { chatId, theirUserId, name, status ->
+                                        onOpenChat(chatId, theirUserId, name, status)
+                                    }
                                 }
                             )
                         }
@@ -168,13 +169,7 @@ private fun SearchResultCard(
                         style = MaterialTheme.typography.titleMedium,
                         color = MaterialTheme.colorScheme.onSurface
                     )
-                    if (user.status == "verified") {
-                        Icon(
-                            painterResource(R.drawable.verified), null,
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(16.dp)
-                        )
-                    }
+                    StatusIcon(status = user.status, size = 16.dp)
                 }
                 Text(
                     text = "@${user.username}",

@@ -51,6 +51,7 @@ import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.vladdev.freedomchat.R
+import com.vladdev.shared.chats.dto.DecryptedMessage
 import com.vladdev.shared.chats.dto.MessageDto
 import com.vladdev.shared.chats.dto.MessageStatus
 import kotlinx.serialization.InternalSerializationApi
@@ -60,11 +61,13 @@ import java.time.format.DateTimeFormatter
 @OptIn(ExperimentalFoundationApi::class, InternalSerializationApi::class)
 @Composable
 fun MessageItem(
-    message: MessageDto,
+    message: DecryptedMessage,
     currentUserId: String?,
     showTail: Boolean,
     onDelete: (messageId: String, forAll: Boolean) -> Unit
 ) {
+
+    val displayText = message.displayText
     val isOwn = message.senderId == currentUserId
     var showMenu by remember { mutableStateOf(false) }
 
@@ -119,9 +122,10 @@ fun MessageItem(
                     .padding(bottom = if (showTail) 8.dp else 0.dp)
             ) {
                 Text(
-                    text = if (message.deletedForAll) "Сообщение удалено" else message.encryptedContent,
-                    color = textColor,
-                    fontStyle = if (message.deletedForAll) FontStyle.Italic else FontStyle.Normal,
+                    text = displayText ?: "Сообщение удалено",
+                    color = if (displayText == null) textColor.copy(alpha = 0.5f) else textColor,
+                    fontStyle = if (message.deletedForAll || displayText == null)
+                        FontStyle.Italic else FontStyle.Normal,
                     style = MaterialTheme.typography.bodyLarge
                 )
                 Spacer(Modifier.height(2.dp))

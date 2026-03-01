@@ -86,3 +86,25 @@ fun ErrorBanner(message: String, modifier: Modifier = Modifier) {
     }
 }
 
+@Composable
+fun StatusIcon(status: String, size: Dp = 16.dp) {
+    when (status) {
+        "verified" -> Icon(
+            painterResource(R.drawable.verified), null,
+            tint = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.size(size)
+        )
+        "service" -> Icon(
+            painterResource(R.drawable.service), null,
+            tint = MaterialTheme.colorScheme.tertiary,
+            modifier = Modifier.size(size)
+        )
+        "admin" -> Icon(
+            painterResource(R.drawable.verified), null,
+            tint = MaterialTheme.colorScheme.error,
+            modifier = Modifier.size(size)
+        )
+        // "standard" — ничего не показываем
+    }
+}
+

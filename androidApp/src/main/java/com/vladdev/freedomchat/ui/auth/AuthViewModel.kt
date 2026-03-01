@@ -6,17 +6,19 @@ import androidx.compose.runtime.setValue
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.vladdev.shared.auth.AuthRepository
+import com.vladdev.shared.auth.LoginResult
 import kotlinx.coroutines.launch
+import kotlinx.serialization.InternalSerializationApi
 
+@OptIn(InternalSerializationApi::class)
 class AuthViewModel(
     private val repository: AuthRepository
 ) : ViewModel() {
 
-    // --- Navigation state ---
     var screen by mutableStateOf(AuthScreen.Welcome)
         private set
 
-    // --- Login fields ---
+    // Login
     var loginUsername by mutableStateOf("")
         private set
     var loginPassword by mutableStateOf("")
@@ -24,7 +26,15 @@ class AuthViewModel(
     var loginError by mutableStateOf<String?>(null)
         private set
 
-    // --- Register fields ---
+    // Transfer
+    var transferChallenge by mutableStateOf<String?>(null)
+        private set
+    var transferExpiresAt by mutableStateOf<Long?>(null)
+        private set
+    var transferUserId by mutableStateOf<String?>(null)
+        private set
+
+    // Register
     var regUsername by mutableStateOf("")
         private set
     var regPassword by mutableStateOf("")
@@ -35,7 +45,6 @@ class AuthViewModel(
         private set
     var regName by mutableStateOf("")
         private set
-
     var regUsernameError by mutableStateOf<String?>(null)
         private set
     var regPasswordError by mutableStateOf<String?>(null)
@@ -45,35 +54,18 @@ class AuthViewModel(
     var regNameError by mutableStateOf<String?>(null)
         private set
 
-    // --- Shared ---
     var isLoading by mutableStateOf(false)
         private set
     var isLoggedIn by mutableStateOf(false)
         private set
 
     init {
-        viewModelScope.launch {
-            isLoggedIn = repository.isLoggedIn()
-        }
+        viewModelScope.launch { isLoggedIn = repository.isLoggedIn() }
     }
 
-    // region Navigation
-    fun navigateTo(target: AuthScreen) {
-        screen = target
-    }
+    fun navigateTo(target: AuthScreen) { screen = target }
 
-    fun goBack() {
-        screen = when (screen) {
-            AuthScreen.Login -> AuthScreen.Welcome
-            AuthScreen.Reg1 -> AuthScreen.Welcome
-            AuthScreen.Reg2 -> AuthScreen.Reg1
-            AuthScreen.Reg3 -> AuthScreen.Reg2
-            else -> AuthScreen.Welcome
-        }
-    }
-    // endregion
 
-    // region Login
     fun onLoginUsernameChange(v: String) { loginUsername = v; loginError = null }
     fun onLoginPasswordChange(v: String) { loginPassword = v; loginError = null }
 
@@ -81,14 +73,54 @@ class AuthViewModel(
         viewModelScope.launch {
             isLoading = true
             repository.login(loginUsername, loginPassword)
-                .onSuccess { isLoggedIn = true }
+                .onSuccess { result ->
+                    when (result) {
+                        is LoginResult.SameDevice -> isLoggedIn = true
+                        is LoginResult.NewDevice  -> isLoggedIn = true
+                        // Новое устройство просто логинится с новым keypair —
+                        // история недоступна, это ожидаемо для E2EE
+                    }
+                }
                 .onFailure { loginError = it.message ?: "Неверный логин или пароль" }
             isLoading = false
         }
     }
-    // endregion
 
-    // region Register
+    // Завершить перенос на НОВОМ устройстве после сканирования QR
+    fun completeTransfer(scannedData: String) {
+        viewModelScope.launch {
+            isLoading = true
+            println("completeTransfer raw length: ${scannedData.length}")
+            runCatching {
+                // split с limit=3 — третья часть содержит всё остальное включая возможные ":"
+                val parts = scannedData.split(":", limit = 3)
+                println("completeTransfer parts: ${parts.size}")
+                require(parts.size == 3) { "Invalid QR format, got ${parts.size} parts" }
+
+                val userId     = parts[0]
+                val challenge  = parts[1]
+                val oldSignKey = parts[2]
+
+                println("userId=${userId.take(8)} challenge=${challenge.take(8)} signKey=${oldSignKey.take(8)}")
+
+                repository.completeTransfer(userId, challenge, oldSignKey)
+                    .onSuccess {
+                        println("Transfer complete, isLoggedIn=true")
+                        isLoggedIn = true
+                    }
+                    .onFailure {
+                        println("Transfer failed: ${it.message}")
+                        loginError = it.message ?: "Ошибка переноса"
+                    }
+            }.onFailure {
+                println("completeTransfer exception: ${it.message}")
+                loginError = it.message ?: "Неверный QR код"
+            }
+            isLoading = false
+        }
+    }
+
+    // Register
     fun onRegUsernameChange(v: String) { regUsername = v; regUsernameError = null }
     fun onRegPasswordChange(v: String) { regPassword = v; regPasswordError = null }
     fun onRegPasswordConfirmChange(v: String) { regPasswordConfirm = v; regPasswordError = null }
@@ -97,14 +129,9 @@ class AuthViewModel(
 
     fun validateReg1(): Boolean {
         var ok = true
-        if (regUsername.length < 4) {
-            regUsernameError = "Минимум 4 символа"; ok = false
-        }
-        if (regPassword.length < 6) {
-            regPasswordError = "Минимум 6 символов"; ok = false
-        } else if (regPassword != regPasswordConfirm) {
-            regPasswordError = "Пароли не совпадают"; ok = false
-        }
+        if (regUsername.length < 4) { regUsernameError = "Минимум 4 символа"; ok = false }
+        if (regPassword.length < 6) { regPasswordError = "Минимум 6 символов"; ok = false }
+        else if (regPassword != regPasswordConfirm) { regPasswordError = "Пароли не совпадают"; ok = false }
         return ok
     }
 
@@ -125,7 +152,18 @@ class AuthViewModel(
             isLoading = false
         }
     }
-    // endregion
+
+    // AuthViewModel — goBack для нового экрана
+    fun goBack() {
+        screen = when (screen) {
+            AuthScreen.Login        -> AuthScreen.Welcome
+            AuthScreen.ScanTransfer -> AuthScreen.Welcome
+            AuthScreen.Reg1         -> AuthScreen.Welcome
+            AuthScreen.Reg2         -> AuthScreen.Reg1
+            AuthScreen.Reg3         -> AuthScreen.Reg2
+            else                    -> AuthScreen.Welcome
+        }
+    }
 }
 
-enum class AuthScreen { Welcome, Login, Reg1, Reg2, Reg3 }
+enum class AuthScreen { Welcome, Login, ScanTransfer, Reg1, Reg2, Reg3 }

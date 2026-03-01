@@ -36,6 +36,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -44,6 +45,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -57,6 +59,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.vladdev.freedomchat.R
+import com.vladdev.freedomchat.ui.auth.QrCodeImage
 import com.vladdev.freedomchat.ui.chats.UserAvatar
 import com.vladdev.freedomchat.ui.theme.FreedomChatTheme
 import kotlinx.serialization.InternalSerializationApi
@@ -252,13 +255,23 @@ fun ProfileScreen(
                     modifier = Modifier.fillMaxWidth().height(52.dp),
                     shape = RoundedCornerShape(16.dp),
                     colors = ButtonDefaults.outlinedButtonColors(
-                        contentColor = MaterialTheme.colorScheme.error
+                        contentColor = MaterialTheme.colorScheme.secondary
                     ),
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.5f))
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.secondary.copy(alpha = 0.5f))
                 ) {
                     Icon(painterResource(R.drawable.logout), null, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.width(8.dp))
                     Text("Выйти из аккаунта")
+                }
+
+                OutlinedButton(
+                    onClick  = viewModel::openTransfer,
+                    modifier = Modifier.fillMaxWidth().height(52.dp),
+                    shape    = RoundedCornerShape(16.dp)
+                ) {
+                    Icon(painterResource(R.drawable.qr_code), null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("Перенести на другое устройство")
                 }
 
                 // --- Кнопка удалить ---
@@ -302,6 +315,17 @@ fun ProfileScreen(
     // --- Диалог удаления аккаунта ---
     if (viewModel.showDeleteDialog) {
         DeleteAccountDialog(viewModel)
+    }
+
+    // ProfileScreen.kt — убираем сломанный remember блок
+    if (viewModel.showTransferSheet) {
+        TransferBottomSheet(
+            userId    = viewModel.profile?.userId ?: "",
+            challenge = viewModel.transferChallenge ?: "",
+            signKey   = viewModel.transferSignKey ?: "",   // ← берём из viewModel
+            expiresAt = viewModel.transferExpiresAt,
+            onDismiss = viewModel::closeTransfer
+        )
     }
 }
 
@@ -556,4 +580,84 @@ private fun DialogPasswordField(
         shape = RoundedCornerShape(12.dp),
         modifier = Modifier.fillMaxWidth()
     )
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun TransferBottomSheet(
+    userId: String,
+    challenge: String,
+    signKey: String,
+    expiresAt: Long?,
+    onDismiss: () -> Unit
+) {
+    val qrData = "$userId:$challenge:$signKey"
+
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 24.dp)
+                .padding(bottom = 32.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(
+                text  = "Перенос аккаунта",
+                style = MaterialTheme.typography.titleLarge
+            )
+
+            Spacer(Modifier.height(8.dp))
+
+            Text(
+                text  = "Отсканируйте QR на новом устройстве",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            Spacer(Modifier.height(24.dp))
+
+            QrCodeImage(
+                data     = qrData,
+                modifier = Modifier.size(240.dp)
+            )
+
+            Spacer(Modifier.height(16.dp))
+
+            expiresAt?.let {
+                val remainingMs = it - System.currentTimeMillis()
+                val mins = (remainingMs / 60000).coerceAtLeast(0)
+                Text(
+                    text  = "QR действителен $mins мин",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (mins < 2)
+                        MaterialTheme.colorScheme.error
+                    else
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            // Временно под QR кодом
+            Text(
+                text = "QR data length: ${qrData.length}",
+                style = MaterialTheme.typography.bodySmall
+            )
+            Text(
+                text = "userId: ${userId.take(8)}...",
+                style = MaterialTheme.typography.bodySmall
+            )
+            Text(
+                text = "challenge: ${challenge.take(8)}...",
+                style = MaterialTheme.typography.bodySmall
+            )
+            Text(
+                text = "signKey: ${signKey?.take(20)}...",
+                style = MaterialTheme.typography.bodySmall
+            )
+
+            Spacer(Modifier.height(16.dp))
+
+            TextButton(onClick = onDismiss) {
+                Text("Закрыть")
+            }
+        }
+    }
 }

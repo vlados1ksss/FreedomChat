@@ -138,8 +138,9 @@ fun PrimaryButton(
     ) {
         AnimatedContent(targetState = loading, label = "btn_loading") { isLoading ->
             if (isLoading) {
-                CircularWavyProgressIndicator(
+                CircularProgressIndicator(
                     modifier = Modifier.size(20.dp),
+                    strokeWidth = 2.dp,
                     color = MaterialTheme.colorScheme.onPrimary
                 )
             } else {

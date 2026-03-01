@@ -1,9 +1,11 @@
 package com.vladdev.shared.user
 
 import com.vladdev.shared.auth.AuthRepository
+import com.vladdev.shared.auth.dto.TransferChallengeResponse
 import com.vladdev.shared.user.dto.UserProfileResponse
 import kotlinx.serialization.InternalSerializationApi
 
+@OptIn(InternalSerializationApi::class)
 class ProfileRepository(
     private val api: ProfileApi,
     private val authRepository: AuthRepository
@@ -26,6 +28,7 @@ class ProfileRepository(
     suspend fun deleteAccount(password: String): Result<Unit> = runCatching {
         api.deleteAccount(password)
     }
-
     suspend fun logout() = authRepository.logout()
+    suspend fun requestTransferChallenge(): Result<TransferChallengeResponse> =
+        runCatching { api.getTransferChallenge() }
 }

@@ -60,16 +60,21 @@ fun AppNavGraph(app: MainApplication, startDestination: String = "auth") {
             ChatsScreen(
                 repository = chatRepo,
                 currentUserId = app.userIdStorage.getUIDSync(),
-                onOpenChat = { chatId, name ->
-                    navController.navigate("chat/$chatId/${Uri.encode(name)}")
+                // добавляем theirUserId в сигнатуру колбэка
+                onOpenChat = { chatId, theirUserId, name, status ->
+                    navController.navigate(
+                        "chat/$chatId/${Uri.encode(theirUserId)}/${Uri.encode(name)}/${Uri.encode(status)}"
+                    )
                 },
                 onOpenProfile = { navController.navigate("profile") }
             )
         }
 
-        composable("chat/{chatId}/{name}") { backStackEntry ->
-            val chatId = backStackEntry.arguments?.getString("chatId")!!
-            val name = backStackEntry.arguments?.getString("name")!!
+        composable("chat/{chatId}/{userId}/{name}/{status}") { backStackEntry ->
+            val chatId       = backStackEntry.arguments?.getString("chatId")!!
+            val theirUserId  = backStackEntry.arguments?.getString("userId")!!
+            val name         = backStackEntry.arguments?.getString("name")!!
+            val status       = backStackEntry.arguments?.getString("status") ?: "standard"
 
             val chatRepo = app.chatRepository
             if (chatRepo == null) {
@@ -79,20 +84,23 @@ fun AppNavGraph(app: MainApplication, startDestination: String = "auth") {
                 return@composable
             }
 
-            // Синхронный вызов — не suspend
             val currentUserId = app.userIdStorage.getUIDSync()
 
             ChatScreen(
-                chatId = chatId,
-                repository = chatRepo,
-                interlocutorUsername = name,
-                currentUserId = currentUserId,
-                onBack = { navController.popBackStack() }
+                chatId                = chatId,
+                repository            = chatRepo,
+                e2ee                  = app.e2ee,
+                interlocutorUsername  = name,
+                interlocutorUserId    = theirUserId,
+                interlocutorStatus    = status,
+                currentUserId         = currentUserId,
+                onBack                = { navController.popBackStack() }
             )
         }
 
         composable("profile") {
             val profileRepo = app.profileRepository
+            val identityStorage = app.identityStorage
             if (profileRepo == null) {
                 LaunchedEffect(Unit) {
                     navController.navigate("auth") { popUpTo(0) { inclusive = true } }
@@ -100,10 +108,9 @@ fun AppNavGraph(app: MainApplication, startDestination: String = "auth") {
                 return@composable
             }
 
-            // Ключ — userId, чтобы ViewModel пересоздалась при смене пользователя
             val userId = app.userIdStorage.getUIDSync()
             val viewModel: ProfileViewModel = viewModel(key = userId) {
-                ProfileViewModel(profileRepo)
+                ProfileViewModel(profileRepo, identityStorage = identityStorage )
             }
 
             ProfileScreen(

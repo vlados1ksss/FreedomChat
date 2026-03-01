@@ -1,5 +1,6 @@
 package com.vladdev.shared.chats
 
+import com.vladdev.shared.auth.dto.PublicKeyResponse
 import com.vladdev.shared.chats.dto.ChatDto
 import com.vladdev.shared.chats.dto.ChatIdResponse
 import com.vladdev.shared.chats.dto.ChatRequestDto
@@ -43,13 +44,13 @@ class ChatApi(private val client: HttpClient, private val tokenStorage: TokenSto
     }
     private val baseUrl = "http://192.168.31.191:8080"
     private val baseWsUrl = "ws://192.168.31.191:8080"
+
     private val wsConnections = mutableMapOf<String, DefaultClientWebSocketSession>()
 
     suspend inline fun <reified T> HttpResponse.safeBody(): T {
         if (!status.isSuccess()) throw Exception("HTTP ${status.value}")
         return body()
     }
-
     suspend fun searchUser(username: String): SearchUserResponse =
         client.get("$baseUrl/chats/search") {
             parameter("username", username)
@@ -73,10 +74,16 @@ class ChatApi(private val client: HttpClient, private val tokenStorage: TokenSto
     suspend fun reject(requestId: String) =
         client.post("$baseUrl/chats/reject/$requestId")
 
+    suspend fun getMessages(chatId: String): List<MessageDto> =
+        client.get("$baseUrl/chats/$chatId/messages").safeBody()
+
+    suspend fun getPublicKey(userId: String): PublicKeyResponse =
+        client.get("$baseUrl/keys/$userId").safeBody()
+
     suspend fun openChatWebSocket(
         chatId: String,
         scope: CoroutineScope,
-        onEvent: (WsIncomingEvent) -> Unit  // теперь тип известен
+        onEvent: (WsIncomingEvent) -> Unit
     ) {
         println("Opening WS session...")
         if (wsConnections.containsKey(chatId)) return
@@ -85,33 +92,22 @@ class ChatApi(private val client: HttpClient, private val tokenStorage: TokenSto
             ?: throw IllegalStateException("No access token")
 
         val session = client.webSocketSession {
-            println("WS URL = $baseUrl/ws/chats/$chatId")
             url {
-                takeFrom(baseWsUrl)  // ws:// вместо http://
+                takeFrom(baseWsUrl)
                 encodedPath = "/ws/chats/$chatId"
                 parameters.append("token", token)
             }
-
         }
-        println("WS session created: ${session.isActive}")
 
         wsConnections[chatId] = session
-        println("Connecting WS with token=${token.take(10)}...")
 
-
-        // ChatApi.kt — в цикле обработки фреймов
         scope.launch {
-            println("WS frame listener started")
             try {
                 for (frame in session.incoming) {
-                    println("WS frame received: $frame")
                     if (frame is Frame.Text) {
                         val text = frame.readText()
-                        println("WS raw text: $text")
-
                         val type = Json.parseToJsonElement(text)
                             .jsonObject["type"]?.jsonPrimitive?.content
-                        println("WS event type: $type")
 
                         val event: WsIncomingEvent = when (type) {
                             "message" -> IncomingMessage(
@@ -125,37 +121,34 @@ class ChatApi(private val client: HttpClient, private val tokenStorage: TokenSto
                                 val e = Json.decodeFromString<WsDeleteEvent>(text)
                                 IncomingDelete(e.messageId, e.deleteForAll)
                             }
-                            else -> {
-                                println("WS unknown event type: $type, skipping")
-                                continue  // <- ВАЖНО: continue вместо return@launch
-                            }
+                            else -> continue
                         }
-                        println("WS event parsed: $event")
                         onEvent(event)
                     }
                 }
-                println("WS frame loop ended normally")
             } catch (e: Exception) {
                 println("WS frame loop error: ${e.message}")
-                e.printStackTrace()
             }
         }
     }
 
     suspend fun sendMessageWS(chatId: String, encryptedContent: String) {
         val session = wsConnections[chatId] ?: throw IllegalStateException("WS not open")
-        val event = WsMessageEvent(message = MessageDto(
-            id = "", chatId = chatId, senderId = "",
-            encryptedContent = encryptedContent, createdAt = 0
-        ))
-        val json = AppJson.encodeToString(event)
-        println("Sending WS frame: $json")
-        session.send(Frame.Text(json))
+        val event = WsMessageEvent(
+            message = MessageDto(
+                id = "", chatId = chatId, senderId = "",
+                encryptedContent = encryptedContent, createdAt = 0
+            )
+        )
+        session.send(Frame.Text(AppJson.encodeToString(event)))
     }
 
     suspend fun sendReadWS(chatId: String, messageId: String, userId: String) {
         val session = wsConnections[chatId] ?: return
-        val event = WsStatusEvent(type = "status", messageId = messageId, userId = userId, status = MessageStatus.READ)
+        val event = WsStatusEvent(
+            type = "status", messageId = messageId,
+            userId = userId, status = MessageStatus.READ
+        )
         session.send(Frame.Text(AppJson.encodeToString(event)))
     }
 
@@ -164,10 +157,8 @@ class ChatApi(private val client: HttpClient, private val tokenStorage: TokenSto
         val event = WsDeleteEvent(messageId = messageId, deleteForAll = forAll)
         session.send(Frame.Text(AppJson.encodeToString(event)))
     }
-    suspend fun getMessages(chatId: String): List<MessageDto> =
-        client.get("$baseUrl/chats/$chatId/messages").safeBody()
+
     suspend fun closeChatWebSocket(chatId: String) {
         wsConnections.remove(chatId)?.close()
     }
 }
-

@@ -79,18 +79,19 @@ class ChatsViewModel(private val repository: ChatRepository) : ViewModel() {
     fun openOrCreateChat(
         userId: String,
         existingChatId: String?,
-        onReady: (chatId: String, name: String) -> Unit
+        onReady: (chatId: String, theirUserId: String, name: String, status: String) -> Unit
     ) {
         viewModelScope.launch {
+            val name   = searchResult?.user?.name ?: searchResult?.user?.username ?: ""
+            val status = searchResult?.user?.status ?: "standard"
+
             if (existingChatId != null) {
-                val name = searchResult?.user?.name ?: searchResult?.user?.username ?: ""
-                onReady(existingChatId, name)
+                onReady(existingChatId, userId, name, status)
             } else {
                 repository.createDirectChat(userId)
                     .onSuccess { chatId ->
                         refresh()
-                        val name = searchResult?.user?.name ?: searchResult?.user?.username ?: ""
-                        onReady(chatId, name)
+                        onReady(chatId, userId, name, status)
                     }
                     .onFailure { error = it.message }
             }

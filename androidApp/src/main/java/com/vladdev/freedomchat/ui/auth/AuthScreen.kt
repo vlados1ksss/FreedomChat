@@ -66,20 +66,19 @@ fun AuthScreen(
                     targetState = viewModel.screen,
                     transitionSpec = {
                         val toRight = targetState.ordinal > initialState.ordinal
-                        val enter = slideInHorizontally { if (toRight) it else -it } +
-                                fadeIn(tween(220))
-                        val exit = slideOutHorizontally { if (toRight) -it else it } +
-                                fadeOut(tween(220))
+                        val enter = slideInHorizontally { if (toRight) it else -it } + fadeIn(tween(220))
+                        val exit  = slideOutHorizontally { if (toRight) -it else it } + fadeOut(tween(220))
                         enter togetherWith exit
                     },
                     label = "auth_screen"
                 ) { screen ->
                     when (screen) {
-                        AuthScreen.Welcome -> WelcomeStep(viewModel)
-                        AuthScreen.Login   -> LoginStep(viewModel)
-                        AuthScreen.Reg1    -> Reg1Step(viewModel)
-                        AuthScreen.Reg2    -> Reg2Step(viewModel)
-                        AuthScreen.Reg3    -> Reg3Step(viewModel)
+                        AuthScreen.Welcome      -> WelcomeStep(viewModel)
+                        AuthScreen.Login        -> LoginStep(viewModel)
+                        AuthScreen.ScanTransfer -> ScanQrStep(viewModel)
+                        AuthScreen.Reg1         -> Reg1Step(viewModel)
+                        AuthScreen.Reg2         -> Reg2Step(viewModel)
+                        AuthScreen.Reg3         -> Reg3Step(viewModel)
                     }
                 }
             }

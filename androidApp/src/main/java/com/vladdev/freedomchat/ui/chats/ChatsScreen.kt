@@ -66,18 +66,12 @@ import kotlinx.serialization.InternalSerializationApi
 @Composable
 fun ChatsScreen(
     repository: ChatRepository,
-    onOpenChat: (chatId: String, name: String) -> Unit,
     currentUserId: String?,
+    onOpenChat: (chatId: String, theirUserId: String, name: String, status: String) -> Unit,
     onOpenProfile: () -> Unit
 ) {
-
-//    val context = LocalContext.current
-//    val sharedPrefs = context.getSharedPreferences("auth", android.content.Context.MODE_PRIVATE)
-//    val currentUserId = sharedPrefs.getString("userId", null)
-
     val viewModel = remember { ChatsViewModel(repository) }
     var showSearch by remember { mutableStateOf(false) }
-
     FreedomChatTheme {
         Scaffold(
             containerColor = MaterialTheme.colorScheme.background,
@@ -94,16 +88,22 @@ fun ChatsScreen(
         ) { padding ->
 
             LazyColumn(
-                modifier = Modifier.fillMaxSize().padding(padding),
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(padding),
                 contentPadding = PaddingValues(bottom = 96.dp)
             ) {
                 item {
                     Box(
-                        modifier = Modifier.fillMaxWidth().padding(vertical = 24.dp)
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 24.dp)
                     ) {
                         FilledIconButton(
                             onClick = onOpenProfile,
-                            modifier = Modifier.align(Alignment.TopStart).padding(start = 16.dp)
+                            modifier = Modifier
+                                .align(Alignment.TopStart)
+                                .padding(start = 16.dp)
                         ) {
                             Icon(painterResource(R.drawable.ic_profile), "Профиль")
                         }
@@ -144,11 +144,13 @@ fun ChatsScreen(
                 } else {
                     items(viewModel.chats, key = { it.chatId }) { chat ->
                         val other = chat.participants.firstOrNull { it.userId != currentUserId }
+                        // При клике на существующий чат из списка
+                        val theirParticipant = chat.participants.first { it.userId != currentUserId }
                         ChatListItem(
-                            // Показываем name вместо username
                             name = other?.name ?: other?.username ?: "Чат",
+                            status = other?.status ?: "standard",
                             onClick = {
-                                onOpenChat(chat.chatId, other?.name ?: other?.username ?: "Чат")
+                                onOpenChat(chat.chatId, theirParticipant.userId, theirParticipant.name, theirParticipant.status)
                             }
                         )
                     }
@@ -167,10 +169,10 @@ fun ChatsScreen(
                     showSearch = false
                     viewModel.clearSearch()
                 },
-                onOpenChat = { chatId, name ->
+                onOpenChat = { chatId, theirUserId, name, status ->
                     showSearch = false
                     viewModel.clearSearch()
-                    onOpenChat(chatId, name)
+                    onOpenChat(chatId, theirUserId, name, status)
                 }
             )
         }
@@ -253,23 +255,33 @@ private fun RequestCard(
 }
 
 @Composable
-private fun ChatListItem(name: String, onClick: () -> Unit) {
+private fun ChatListItem(name: String, status: String = "standard", onClick: () -> Unit) {
     val interactionSource = remember { MutableInteractionSource() }
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(interactionSource = interactionSource, indication = ripple(), onClick = onClick)
+            .clickable(
+                interactionSource = interactionSource,
+                indication = ripple(),
+                onClick = onClick
+            )
             .padding(horizontal = 20.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         UserAvatar(name = name, size = 52.dp)
         Spacer(Modifier.width(14.dp))
         Column(modifier = Modifier.weight(1f)) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
             Text(
                 text = name,
                 style = MaterialTheme.typography.titleMedium,
                 color = MaterialTheme.colorScheme.onBackground
             )
+                StatusIcon(status = status, size = 14.dp)
+            }
             Text(
                 text = "Нажмите, чтобы открыть чат",
                 style = MaterialTheme.typography.bodySmall,

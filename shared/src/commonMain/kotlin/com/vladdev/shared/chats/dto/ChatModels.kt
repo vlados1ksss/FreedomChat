@@ -14,7 +14,8 @@ data class ChatRequestDto(
 data class ParticipantDto(
     val userId: String,
     val username: String,
-    val name: String
+    val name: String,
+    val status: String = "standard"
 )
 
 @InternalSerializationApi @Serializable

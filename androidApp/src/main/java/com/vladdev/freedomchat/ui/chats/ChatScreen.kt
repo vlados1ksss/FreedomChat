@@ -71,21 +71,32 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.vladdev.freedomchat.R
 import com.vladdev.freedomchat.ui.theme.FreedomChatTheme
 import com.vladdev.shared.chats.ChatRepository
+import com.vladdev.shared.crypto.E2eeManager
 import kotlinx.coroutines.launch
 import kotlinx.serialization.InternalSerializationApi
+import java.util.Calendar
 
 @OptIn(ExperimentalMaterial3Api::class, InternalSerializationApi::class)
 @Composable
 fun ChatScreen(
     chatId: String,
     repository: ChatRepository,
+    e2ee: E2eeManager,
     interlocutorUsername: String,
+    interlocutorUserId: String,          // <-- новый параметр
     currentUserId: String?,
+    interlocutorStatus: String = "standard",
     onBack: () -> Unit
 ) {
     val viewModel: ChatViewModel = viewModel(
         key = "chat_$chatId",
-        factory = ChatViewModelFactory(repository, chatId, currentUserId)
+        factory = ChatViewModelFactory(
+            repository    = repository,
+            e2ee          = e2ee,
+            chatId        = chatId,
+            currentUserId = currentUserId,
+            theirUserId   = interlocutorUserId
+        )
     )
 
     val listState = rememberLazyListState()
@@ -123,6 +134,7 @@ fun ChatScreen(
             topBar = {
                 ChatTopBarRounded(
                     name = interlocutorUsername,
+                    status = interlocutorStatus,
                     isConnected = viewModel.isConnected,
                     onBack = onBack
                 )
@@ -147,12 +159,12 @@ fun ChatScreen(
                         key = { _, it -> it.id }
                     ) { index, message ->
 
-                        // previous (index - 1) is the newer message when reverseLayout = true
                         val previousMessage = messages.getOrNull(index - 1)
+                        val nextMessage = messages.getOrNull(index + 1) // более старое сообщение
+
                         val isOwn = message.senderId == currentUserId
                         val previousIsSameSender = previousMessage?.senderId == message.senderId
-
-                        val showTail = !previousIsSameSender // true when this is the newest of a sender's run
+                        val showTail = !previousIsSameSender
 
                         MessageItem(
                             message = message,
@@ -160,6 +172,22 @@ fun ChatScreen(
                             showTail = showTail,
                             onDelete = { id, forAll -> viewModel.deleteMessage(id, forAll) }
                         )
+
+                        // Показываем разделитель ПОСЛЕ рендера сообщения (визуально — над ним,
+                        // т.к. reverseLayout = true) если день изменился или это последнее сообщение
+                        val showSeparator = when {
+                            nextMessage == null -> true // самое старое сообщение — всегда показываем дату
+                            else -> {
+                                val msgDay = Calendar.getInstance().apply { timeInMillis = message.createdAt }
+                                val nextDay = Calendar.getInstance().apply { timeInMillis = nextMessage.createdAt }
+                                msgDay.get(Calendar.YEAR) != nextDay.get(Calendar.YEAR) ||
+                                        msgDay.get(Calendar.DAY_OF_YEAR) != nextDay.get(Calendar.DAY_OF_YEAR)
+                            }
+                        }
+
+                        if (showSeparator) {
+                            DateSeparator(label = formatDateSeparator(message.createdAt))
+                        }
                     }
                 }
 
@@ -236,6 +264,7 @@ fun ChatScreen(
 private fun ChatTopBarRounded(
     name: String,
     isConnected: Boolean,
+    status: String = "standard",
     onBack: () -> Unit
 ) {
     Surface(
@@ -249,11 +278,18 @@ private fun ChatTopBarRounded(
                     UserAvatar(name = name, size = 40.dp)
                     Spacer(Modifier.width(12.dp))
                     Column {
-                        Text(
-                            text = name,
-                            style = MaterialTheme.typography.titleMedium,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
+
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Text(
+                                text = name,
+                                style = MaterialTheme.typography.titleMedium,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            StatusIcon(status = status, size = 16.dp)
+                        }
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Box(
                                 modifier = Modifier
@@ -362,4 +398,66 @@ private fun ChatInputField(
         }
     }
     Spacer(Modifier.height(8.dp))
+}
+
+@Composable
+fun DateSeparator(label: String) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 8.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Surface(
+            shape = RoundedCornerShape(50),
+            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+            border = BorderStroke(
+                width = 1.dp,
+                color = MaterialTheme.colorScheme.outlineVariant
+            )
+        ) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.padding(horizontal = 14.dp, vertical = 5.dp)
+            )
+        }
+    }
+}
+
+fun formatDateSeparator(timestamp: Long): String {
+    val messageDate = Calendar.getInstance().apply { timeInMillis = timestamp }
+    val today = Calendar.getInstance()
+    val yesterday = Calendar.getInstance().apply { add(Calendar.DAY_OF_YEAR, -1) }
+
+    fun Calendar.isSameDay(other: Calendar) =
+        get(Calendar.YEAR) == other.get(Calendar.YEAR) &&
+                get(Calendar.DAY_OF_YEAR) == other.get(Calendar.DAY_OF_YEAR)
+
+    return when {
+        messageDate.isSameDay(today) -> "Сегодня"
+        messageDate.isSameDay(yesterday) -> "Вчера"
+        else -> {
+            val day = messageDate.get(Calendar.DAY_OF_MONTH)
+            val month = when (messageDate.get(Calendar.MONTH)) {
+                Calendar.JANUARY  -> "января"
+                Calendar.FEBRUARY -> "февраля"
+                Calendar.MARCH    -> "марта"
+                Calendar.APRIL    -> "апреля"
+                Calendar.MAY      -> "мая"
+                Calendar.JUNE     -> "июня"
+                Calendar.JULY     -> "июля"
+                Calendar.AUGUST   -> "августа"
+                Calendar.SEPTEMBER -> "сентября"
+                Calendar.OCTOBER  -> "октября"
+                Calendar.NOVEMBER -> "ноября"
+                Calendar.DECEMBER -> "декабря"
+                else -> ""
+            }
+            // Если год не текущий — добавляем год
+            val year = messageDate.get(Calendar.YEAR)
+            if (year != today.get(Calendar.YEAR)) "$day $month $year г." else "$day $month"
+        }
+    }
 }

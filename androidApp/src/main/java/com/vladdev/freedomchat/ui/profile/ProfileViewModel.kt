@@ -5,13 +5,18 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.vladdev.shared.auth.AuthRepository
+import com.vladdev.shared.auth.dto.TransferChallengeResponse
+import com.vladdev.shared.storage.IdentityKeyStorage
 import com.vladdev.shared.user.ProfileRepository
 import com.vladdev.shared.user.dto.UserProfileResponse
 import kotlinx.coroutines.launch
 import kotlinx.serialization.InternalSerializationApi
 
+@OptIn(InternalSerializationApi::class)
 class ProfileViewModel(
-    private val repository: ProfileRepository
+    private val repository: ProfileRepository,
+    private val identityStorage: IdentityKeyStorage
 ) : ViewModel() {
 
     @OptIn(InternalSerializationApi::class)
@@ -72,6 +77,15 @@ class ProfileViewModel(
         private set
 
     var loggedOut by mutableStateOf(false)
+        private set
+
+    var transferChallenge by mutableStateOf<String?>(null)
+        private set
+    var transferExpiresAt by mutableStateOf<Long?>(null)
+        private set
+    var showTransferSheet by mutableStateOf(false)
+        private set
+    var transferSignKey by mutableStateOf<String?>(null)
         private set
 
     init { loadProfile() }
@@ -189,5 +203,35 @@ class ProfileViewModel(
             repository.logout()
             loggedOut = true
         }
+    }
+
+    fun openTransfer() {
+        viewModelScope.launch {
+            isLoading = true
+            val signKey = identityStorage.getSignKey()
+            println("ProfileVM: signKey=${signKey?.take(8)}")
+
+            repository.requestTransferChallenge()
+                .onSuccess { response ->
+                    println("ProfileVM: challenge=${response.challenge.take(8)}")
+                    transferSignKey   = signKey
+                    transferChallenge = response.challenge
+                    transferExpiresAt = response.expiresAt
+                    showTransferSheet = true
+                }
+                .onFailure {
+                    println("ProfileVM: transfer challenge failed: ${it.message}")
+                    it.printStackTrace()
+                }
+            isLoading = false
+        }
+    }
+
+
+
+    fun closeTransfer() {
+        showTransferSheet = false
+        transferChallenge = null
+        transferExpiresAt = null
     }
 }

@@ -1,5 +1,6 @@
 package com.vladdev.shared.user
 
+import com.vladdev.shared.auth.dto.TransferChallengeResponse
 import com.vladdev.shared.user.dto.ChangePasswordRequest
 import com.vladdev.shared.user.dto.DeleteAccountRequest
 import com.vladdev.shared.user.dto.UpdateEmailRequest
@@ -71,4 +72,7 @@ class ProfileApi(private val client: HttpClient) {
             throw Exception(message)
         }
     }
+    @OptIn(InternalSerializationApi::class)
+    suspend fun getTransferChallenge(): TransferChallengeResponse =
+        client.get("$base/auth/transfer/challenge").body()
 }

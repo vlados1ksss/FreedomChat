@@ -41,7 +41,9 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         val app = application as MainApplication
 
-        app.authRepository.onSessionCreated = { app.createSession() }
+        app.authRepository.onSessionCreated = { isNewDevice ->
+            app.createSession(isNewDevice)
+        }
         app.authRepository.onSessionDestroyed = { app.destroySession() }
 
         setContent {
@@ -93,7 +95,7 @@ private fun SplashScreen() {
                 modifier = Modifier.fillMaxSize(),
                 contentAlignment = Alignment.Center
             ) {
-                LoadingIndicator(modifier = Modifier.size(64.dp))
+                LoadingIndicator(modifier = Modifier.size(84.dp))
             }
         }
     }
