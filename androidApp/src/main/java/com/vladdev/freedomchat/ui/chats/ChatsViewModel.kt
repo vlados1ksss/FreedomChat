@@ -8,58 +8,100 @@ import androidx.lifecycle.viewModelScope
 import com.vladdev.shared.chats.ChatRepository
 import com.vladdev.shared.chats.dto.ChatDto
 import com.vladdev.shared.chats.dto.ChatRequestDto
+import com.vladdev.shared.chats.dto.SearchUserResponse
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.serialization.InternalSerializationApi
 import kotlin.collections.emptyList
 
-class ChatsViewModel(
-    private val repository: ChatRepository
-) : ViewModel() {
+@OptIn(InternalSerializationApi::class)
+class ChatsViewModel(private val repository: ChatRepository) : ViewModel() {
 
     var chats by mutableStateOf<List<ChatDto>>(emptyList())
         private set
-
     var incomingRequests by mutableStateOf<List<ChatRequestDto>>(emptyList())
         private set
-
     var isLoading by mutableStateOf(false)
         private set
-
     var error by mutableStateOf<String?>(null)
         private set
 
-    init {
-        refresh()
-    }
+    // Поиск
+    var searchQuery by mutableStateOf("")
+        private set
+    var searchResult by mutableStateOf<SearchUserResponse?>(null)
+        private set
+    var isSearching by mutableStateOf(false)
+        private set
+
+    private var searchJob: Job? = null
+
+    init { refresh() }
 
     fun refresh() {
         viewModelScope.launch {
             isLoading = true
-
             repository.loadChats()
                 .onSuccess { chats = it }
                 .onFailure { error = it.message }
-
             repository.loadRequests()
                 .onSuccess { incomingRequests = it }
                 .onFailure { error = it.message }
-
             isLoading = false
         }
     }
 
-    fun sendRequest(username: String) {
+    fun onSearchQueryChange(query: String) {
+        searchQuery = query
+        searchJob?.cancel()
+        if (query.isBlank()) {
+            searchResult = null
+            return
+        }
+        searchJob = viewModelScope.launch {
+            delay(400) // debounce
+            isSearching = true
+            repository.searchUser(query.trimStart('@'))
+                .onSuccess { searchResult = it }
+                .onFailure { searchResult = null }
+            isSearching = false
+        }
+    }
+
+    fun clearSearch() {
+        searchQuery = ""
+        searchResult = null
+        searchJob?.cancel()
+    }
+
+    // Создаём чат и возвращаем chatId через колбэк
+    fun openOrCreateChat(
+        userId: String,
+        existingChatId: String?,
+        onReady: (chatId: String, theirUserId: String, name: String, status: String) -> Unit
+    ) {
         viewModelScope.launch {
-            repository.sendRequest(username)
-                .onFailure { error = it.message }
+            val name   = searchResult?.user?.name ?: searchResult?.user?.username ?: ""
+            val status = searchResult?.user?.status ?: "standard"
+
+            if (existingChatId != null) {
+                onReady(existingChatId, userId, name, status)
+            } else {
+                repository.createDirectChat(userId)
+                    .onSuccess { chatId ->
+                        refresh()
+                        onReady(chatId, userId, name, status)
+                    }
+                    .onFailure { error = it.message }
+            }
         }
     }
 
     fun acceptRequest(requestId: String) {
         viewModelScope.launch {
             repository.accept(requestId)
-                .onSuccess {
-                    refresh()
-                }
+                .onSuccess { refresh() }
                 .onFailure { error = it.message }
         }
     }
