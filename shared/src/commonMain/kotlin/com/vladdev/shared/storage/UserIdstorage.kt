@@ -1,8 +1,9 @@
 package com.vladdev.shared.storage
 
-interface UserIdStorage {
 
-    suspend fun saveUID(userId: String)
+interface UserIdStorage {
+    suspend fun saveUID(uid: String)
     suspend fun getUID(): String?
-    suspend fun clearUID()
+    suspend fun clear()
 }
+
