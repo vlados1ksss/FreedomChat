@@ -31,4 +31,7 @@ class ProfileRepository(
     suspend fun logout() = authRepository.logout()
     suspend fun requestTransferChallenge(): Result<TransferChallengeResponse> =
         runCatching { api.getTransferChallenge() }
+
+    suspend fun saveFcmToken(token: String) = runCatching { api.saveFcmToken(token) }
+    suspend fun deleteFcmToken() = runCatching { api.deleteFcmToken() }
 }

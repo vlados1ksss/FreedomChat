@@ -11,12 +11,14 @@ data class DecryptedMessage @OptIn(InternalSerializationApi::class) constructor(
     val text: String?,
     val createdAt: Long,
     val deletedForAll: Boolean = false,
+    val isUnavailable: Boolean = false,
     val statuses: List<MessageStatusDto> = emptyList()
 ) {
     val isDeleted get() = deletedForAll
     val displayText get() = when {
         isDeleted -> null
-        text == null -> "Ошибка расшифровки"
+        isUnavailable  -> null
+        text == null -> null
         else -> text
     }
 }

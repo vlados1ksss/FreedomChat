@@ -22,36 +22,36 @@ import kotlinx.serialization.InternalSerializationApi
 import kotlinx.serialization.json.Json
 
 class ProfileApi(private val client: HttpClient) {
-    private val base = "http://192.168.31.191:8080"
-
+    private val baseUrl = "http://192.168.31.191:8080"
+//    private val baseUrl = "https://6fa43409c383f2.lhr.life"
     @OptIn(InternalSerializationApi::class)
     suspend fun getProfile(): UserProfileResponse =
-        client.get("$base/profile/me").body()
+        client.get("$baseUrl/profile/me").body()
 
     @OptIn(InternalSerializationApi::class)
     suspend fun updateName(name: String) =
-        client.patch("$base/profile/name") {
+        client.patch("$baseUrl/profile/name") {
             contentType(ContentType.Application.Json)
             setBody(UpdateNameRequest(name))
         }
 
     @OptIn(InternalSerializationApi::class)
     suspend fun updateEmail(email: String) =
-        client.patch("$base/profile/email") {
+        client.patch("$baseUrl/profile/email") {
             contentType(ContentType.Application.Json)
             setBody(UpdateEmailRequest(email))
         }
 
     @OptIn(InternalSerializationApi::class)
     suspend fun verifyPassword(password: String): Boolean =
-        client.post("$base/profile/verify-password") {
+        client.post("$baseUrl/profile/verify-password") {
             contentType(ContentType.Application.Json)
             setBody(VerifyPasswordRequest(password))
         }.status == HttpStatusCode.OK
 
     @OptIn(InternalSerializationApi::class)
     suspend fun changePassword(current: String, new: String) {
-        val response = client.patch("$base/profile/password") {
+        val response = client.patch("$baseUrl/profile/password") {
             contentType(ContentType.Application.Json)
             setBody(ChangePasswordRequest(current, new))
         }
@@ -62,7 +62,7 @@ class ProfileApi(private val client: HttpClient) {
 
     @OptIn(InternalSerializationApi::class)
     suspend fun deleteAccount(password: String) {
-        val response = client.delete("$base/profile") {
+        val response = client.delete("$baseUrl/profile") {
             contentType(ContentType.Application.Json)
             setBody(DeleteAccountRequest(password))
         }
@@ -74,5 +74,16 @@ class ProfileApi(private val client: HttpClient) {
     }
     @OptIn(InternalSerializationApi::class)
     suspend fun getTransferChallenge(): TransferChallengeResponse =
-        client.get("$base/auth/transfer/challenge").body()
+        client.get("$baseUrl/auth/transfer/challenge").body()
+
+    suspend fun saveFcmToken(token: String) {
+        client.post("$baseUrl/profile/fcm-token") {
+            contentType(ContentType.Application.Json)
+            setBody(mapOf("token" to token))
+        }
+    }
+
+    suspend fun deleteFcmToken() {
+        client.delete("$baseUrl/profile/fcm-token")
+    }
 }

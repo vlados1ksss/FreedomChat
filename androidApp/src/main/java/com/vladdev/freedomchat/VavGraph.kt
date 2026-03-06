@@ -4,7 +4,10 @@ import android.content.Context
 import android.net.Uri
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.compose.NavHost
@@ -21,9 +24,11 @@ import com.vladdev.freedomchat.ui.profile.ProfileViewModel
 import com.vladdev.shared.auth.AuthRepository
 import com.vladdev.shared.chats.ChatRepository
 import com.vladdev.shared.user.ProfileRepository
+import kotlinx.serialization.InternalSerializationApi
 
+@OptIn(InternalSerializationApi::class)
 @Composable
-fun AppNavGraph(app: MainApplication, startDestination: String = "auth") {
+fun AppNavGraph(app: MainApplication, startDestination: String = "auth", openChatId: String? = null ) {
     val navController = rememberNavController()
     LaunchedEffect(Unit) {
         app.authRepository.sessionExpiredFlow.collect {
@@ -33,6 +38,28 @@ fun AppNavGraph(app: MainApplication, startDestination: String = "auth") {
             }
         }
     }
+    LaunchedEffect(openChatId, startDestination) {
+        if (openChatId == null) return@LaunchedEffect
+        if (startDestination != "chats") return@LaunchedEffect
+
+        val chatRepo = app.chatRepository ?: return@LaunchedEffect
+        val currentUserId = app.userIdStorage.getUIDSync() ?: return@LaunchedEffect
+
+        try {
+            val chats = chatRepo.loadChats().getOrNull() ?: return@LaunchedEffect
+            val chat  = chats.find { it.chatId == openChatId } ?: return@LaunchedEffect
+            val their = chat.participants.firstOrNull { it.userId != currentUserId }
+                ?: return@LaunchedEffect
+
+            navController.navigate(
+                "chat/$openChatId/${Uri.encode(their.userId)}/" +
+                        "${Uri.encode(their.name)}/${Uri.encode(their.status)}"
+            )
+        } catch (e: Exception) {
+            println("Deep link navigation error: ${e.message}")
+        }
+    }
+    var lastOpenedChatId by remember { mutableStateOf<String?>(null) }
     NavHost(navController = navController, startDestination = startDestination) {
 
         composable("auth") {
@@ -49,6 +76,7 @@ fun AppNavGraph(app: MainApplication, startDestination: String = "auth") {
             )
         }
 
+
         composable("chats") {
             val chatRepo = app.chatRepository ?: run {
                 LaunchedEffect(Unit) {
@@ -58,10 +86,9 @@ fun AppNavGraph(app: MainApplication, startDestination: String = "auth") {
             }
 
             ChatsScreen(
-                repository = chatRepo,
+                repository    = chatRepo,
                 currentUserId = app.userIdStorage.getUIDSync(),
-                // добавляем theirUserId в сигнатуру колбэка
-                onOpenChat = { chatId, theirUserId, name, status ->
+                onOpenChat    = { chatId, theirUserId, name, status ->
                     navController.navigate(
                         "chat/$chatId/${Uri.encode(theirUserId)}/${Uri.encode(name)}/${Uri.encode(status)}"
                     )

@@ -20,7 +20,8 @@ data class MessageDto(
     val encryptedContent: String,
     val createdAt: Long,
     val deletedForAll: Boolean = false,
-    val statuses: List<MessageStatusDto> = emptyList()
+    val statuses: List<MessageStatusDto> = emptyList(),
+    val plaintextPreview: String? = null
 )
 
 @InternalSerializationApi @Serializable

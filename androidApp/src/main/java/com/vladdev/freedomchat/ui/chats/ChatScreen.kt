@@ -1,5 +1,6 @@
 package com.vladdev.freedomchat.ui.chats
 
+import android.app.Application
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.Spring
@@ -64,6 +65,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
@@ -83,14 +85,17 @@ fun ChatScreen(
     repository: ChatRepository,
     e2ee: E2eeManager,
     interlocutorUsername: String,
-    interlocutorUserId: String,          // <-- новый параметр
+    interlocutorUserId: String,
     currentUserId: String?,
     interlocutorStatus: String = "standard",
     onBack: () -> Unit
 ) {
+    val context = LocalContext.current
+
     val viewModel: ChatViewModel = viewModel(
-        key = "chat_$chatId",
+        key     = "chat_$chatId",
         factory = ChatViewModelFactory(
+            application   = context.applicationContext as Application,
             repository    = repository,
             e2ee          = e2ee,
             chatId        = chatId,
@@ -130,13 +135,14 @@ fun ChatScreen(
     }
     FreedomChatTheme {
         Scaffold(
-            containerColor = MaterialTheme.colorScheme.background,
             topBar = {
                 ChatTopBarRounded(
-                    name = interlocutorUsername,
-                    status = interlocutorStatus,
+                    name        = interlocutorUsername,
+                    status      = interlocutorStatus,
                     isConnected = viewModel.isConnected,
-                    onBack = onBack
+                    isMuted     = viewModel.isMuted,
+                    onMuteToggle = viewModel::toggleMute,
+                    onBack      = onBack
                 )
             },
             modifier = Modifier.imePadding()
@@ -220,7 +226,7 @@ fun ChatScreen(
                         ),
                         elevation = ButtonDefaults.buttonElevation(defaultElevation = 4.dp)
                     ) {
-                        Icon(painterResource(R.drawable.ic_right), contentDescription = null)
+                        Icon(painterResource(R.drawable.arrow_down), contentDescription = null)
                         Spacer(Modifier.width(8.dp))
                         Text("Новые сообщения")
                     }
@@ -264,6 +270,8 @@ fun ChatScreen(
 private fun ChatTopBarRounded(
     name: String,
     isConnected: Boolean,
+    isMuted: Boolean,
+    onMuteToggle: () -> Unit,
     status: String = "standard",
     onBack: () -> Unit
 ) {
@@ -321,11 +329,15 @@ private fun ChatTopBarRounded(
             },
             actions = {
                 IconButton(onClick = {}) {
-                    Icon(
-                        painterResource(R.drawable.more_vert),
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onSurface
-                    )
+                    IconButton(onClick = onMuteToggle) {
+                        Icon(
+                            painter = painterResource(
+                                if (isMuted) R.drawable.notifications_off
+                                else R.drawable.notifications_on
+                            ),
+                            contentDescription = if (isMuted) "Включить уведомления" else "Выключить уведомления"
+                        )
+                    }
                 }
             },
             colors = TopAppBarDefaults.topAppBarColors(

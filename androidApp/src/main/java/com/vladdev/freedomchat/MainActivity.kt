@@ -1,8 +1,13 @@
 package com.vladdev.freedomchat
 
+import android.Manifest
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -37,9 +42,26 @@ import com.vladdev.freedomchat.ui.theme.FreedomChatTheme
 import com.vladdev.shared.auth.dto.RefreshResult
 
 class MainActivity : ComponentActivity() {
+    private val notificationPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        println("Notification permission: $granted")
+    }
+    private val _openChatId = mutableStateOf<String?>(null)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val app = application as MainApplication
+        _openChatId.value = intent.getStringExtra("open_chat_id")
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
+                != PackageManager.PERMISSION_GRANTED
+            ) {
+                notificationPermissionLauncher.launch(
+                    Manifest.permission.POST_NOTIFICATIONS
+                )
+            }
+        }
 
         app.authRepository.onSessionCreated = { isNewDevice ->
             app.createSession(isNewDevice)
@@ -73,16 +95,19 @@ class MainActivity : ComponentActivity() {
                     }
                 }
             }
-
+            val openChatId by _openChatId
             FreedomChatTheme {
                 when {
-                    // Пока определяем — показываем сплэш (без мигания authScreen)
                     startDestination == null && !networkError -> SplashScreen()
                     networkError -> OfflineScreen(onRetry = { retryKey++ })
-                    else -> AppNavGraph(app = app, startDestination = startDestination!!)
+                    else -> AppNavGraph(app = app, startDestination = startDestination!!, openChatId = openChatId)
                 }
             }
         }
+    }
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        _openChatId.value = intent.getStringExtra("open_chat_id")
     }
 }
 

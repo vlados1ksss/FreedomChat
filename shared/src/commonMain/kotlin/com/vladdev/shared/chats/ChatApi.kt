@@ -19,7 +19,10 @@ import io.ktor.client.plugins.websocket.webSocketSession
 import io.ktor.client.request.get
 import io.ktor.client.request.parameter
 import io.ktor.client.request.post
+import io.ktor.client.request.setBody
 import io.ktor.client.statement.HttpResponse
+import io.ktor.http.ContentType
+import io.ktor.http.contentType
 import io.ktor.http.encodedPath
 import io.ktor.http.isSuccess
 import io.ktor.http.takeFrom
@@ -44,6 +47,9 @@ class ChatApi(private val client: HttpClient, private val tokenStorage: TokenSto
     }
     private val baseUrl = "http://192.168.31.191:8080"
     private val baseWsUrl = "ws://192.168.31.191:8080"
+
+//    private val baseWsUrl = "wss://6fa43409c383f2.lhr.life"
+//    private val baseUrl = "https://6fa43409c383f2.lhr.life"
 
     private val wsConnections = mutableMapOf<String, DefaultClientWebSocketSession>()
 
@@ -80,13 +86,19 @@ class ChatApi(private val client: HttpClient, private val tokenStorage: TokenSto
     suspend fun getPublicKey(userId: String): PublicKeyResponse =
         client.get("$baseUrl/keys/$userId").safeBody()
 
+    // ChatApi.kt
+
     suspend fun openChatWebSocket(
         chatId: String,
         scope: CoroutineScope,
         onEvent: (WsIncomingEvent) -> Unit
     ) {
-        println("Opening WS session...")
-        if (wsConnections.containsKey(chatId)) return
+        // Если соединение уже есть — просто добавляем ещё одного слушателя через flow
+        // Само соединение одно, подписчиков через SharedFlow может быть много
+        if (wsConnections.containsKey(chatId)) {
+            println("WS already open for $chatId, reusing")
+            return
+        }
 
         val token = tokenStorage.getAccessToken()
             ?: throw IllegalStateException("No access token")
@@ -127,7 +139,8 @@ class ChatApi(private val client: HttpClient, private val tokenStorage: TokenSto
                     }
                 }
             } catch (e: Exception) {
-                println("WS frame loop error: ${e.message}")
+                println("WS frame loop error for $chatId: ${e.message}")
+                wsConnections.remove(chatId)
             }
         }
     }
@@ -161,4 +174,19 @@ class ChatApi(private val client: HttpClient, private val tokenStorage: TokenSto
     suspend fun closeChatWebSocket(chatId: String) {
         wsConnections.remove(chatId)?.close()
     }
+
+    suspend fun setChatMuted(chatId: String, muted: Boolean) {
+        client.post("$baseUrl/chats/$chatId/mute") {
+            contentType(ContentType.Application.Json)
+            setBody(mapOf("muted" to muted))
+        }
+    }
+    suspend fun markChatAsRead(chatId: String) {
+        client.post("$baseUrl/chats/$chatId/read")
+    }
+    suspend fun getChatMuted(chatId: String): Boolean =
+        client.get("$baseUrl/chats/$chatId/mute")
+            .body<Map<String, Boolean>>()["muted"] ?: false
+
+    fun hasActiveConnection(chatId: String): Boolean = wsConnections.containsKey(chatId)
 }

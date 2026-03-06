@@ -18,11 +18,13 @@ data class ParticipantDto(
     val status: String = "standard"
 )
 
-@InternalSerializationApi @Serializable
-data class ChatDto(
+@Serializable
+data class ChatDto @OptIn(InternalSerializationApi::class) constructor(
     val chatId: String,
     val participants: List<ParticipantDto>,
-    val createdAt: Long
+    val createdAt: Long,
+    val lastMessage: MessageDto? = null,
+    val unreadCount: Int = 0
 )
 
 @InternalSerializationApi @Serializable

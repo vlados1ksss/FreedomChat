@@ -1,9 +1,12 @@
 package com.vladdev.freedomchat.ui.chats
 
+import android.app.Application
+import android.content.Context
 import android.util.Log
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.vladdev.freedomchat.MainApplication
@@ -12,6 +15,7 @@ import com.vladdev.shared.chats.IncomingDelete
 import com.vladdev.shared.chats.IncomingMessage
 import com.vladdev.shared.chats.IncomingStatus
 import com.vladdev.shared.chats.dto.DecryptedMessage
+import com.vladdev.shared.chats.dto.MessageStatus
 import com.vladdev.shared.chats.dto.MessageStatusDto
 import com.vladdev.shared.crypto.E2eeManager
 import kotlinx.coroutines.Dispatchers
@@ -24,13 +28,15 @@ import kotlinx.serialization.InternalSerializationApi
 
 @OptIn(InternalSerializationApi::class)
 class ChatViewModel(
+    application: Application,
     private val repository: ChatRepository,
     private val chatId: String,
     private val currentUserId: String?,
     private val e2ee: E2eeManager,
-    private val theirUserId: String,
-) : ViewModel() {
+    private val theirUserId: String
+) : AndroidViewModel(application) {
 
+    private val app get() = getApplication<MainApplication>()
     private val _messages = MutableStateFlow<List<DecryptedMessage>>(emptyList())
     val messages = _messages.asStateFlow()
     var newMessage by mutableStateOf("")
@@ -49,8 +55,14 @@ class ChatViewModel(
     var isScrollToBottomPending by mutableStateOf(false)
         private set
 
+    var isMuted by mutableStateOf(false)
+        private set
+
+
     init {
+        app.activeChatId = chatId
         loadHistory()
+        loadMuteStatus()
         connectWebSocket()
     }
 
@@ -96,9 +108,27 @@ class ChatViewModel(
             try {
                 val history = repository.getMessages(chatId, currentUserId ?: "")
                 _messages.value = history.sortedByDescending { it.createdAt }
+
+                // Помечаем все непрочитанные входящие как прочитанные
+                markAllIncomingAsRead(history)
             } catch (e: Exception) {
                 Log.e(MainApplication.LogTags.CHAT_VM, "HISTORY ERROR", e)
             }
+        }
+    }
+
+    private fun markAllIncomingAsRead(messages: List<DecryptedMessage>) {
+        val myId = currentUserId ?: return
+        viewModelScope.launch {
+            messages
+                .filter { msg ->
+                    msg.senderId != myId &&
+                            !msg.deletedForAll &&
+                            msg.statuses.none { it.userId == myId && it.status == MessageStatus.READ }
+                }
+                .forEach { msg ->
+                    repository.sendRead(chatId, msg.id, myId)
+                }
         }
     }
 
@@ -106,7 +136,7 @@ class ChatViewModel(
         wsJob?.cancel()
         wsJob = viewModelScope.launch {
 
-            launch {
+            val collectJob = launch {
                 repository.eventsFlow(chatId).collect { event ->
                     when (event) {
 
@@ -165,6 +195,11 @@ class ChatViewModel(
                             currentUserId?.let {
                                 repository.sendRead(chatId, msg.id, it)
                             }
+                            if (msg.senderId != currentUserId) {
+                                currentUserId?.let {
+                                    repository.sendRead(chatId, msg.id, it)
+                                }
+                            }
                         }
 
                         is IncomingStatus -> {
@@ -182,11 +217,7 @@ class ChatViewModel(
                         is IncomingDelete -> {
                             _messages.update { old ->
                                 if (event.deleteForAll) {
-                                    old.map {
-                                        if (it.id == event.messageId)
-                                            it.copy(deletedForAll = true, text = null)
-                                        else it
-                                    }
+                                    old.filterNot { it.id == event.messageId }
                                 } else {
                                     old.filterNot { it.id == event.messageId }
                                 }
@@ -201,6 +232,7 @@ class ChatViewModel(
                 isConnected = true
             } catch (e: Exception) {
                 isConnected = false
+                collectJob.cancel()
             }
         }
     }
@@ -215,13 +247,29 @@ class ChatViewModel(
         }
     }
 
+    // ChatViewModel.kt
+
     override fun onCleared() {
+        app.activeChatId = null
         wsJob?.cancel()
 
         viewModelScope.launch(Dispatchers.IO) {
-            repository.closeChat(chatId)
+            repository.detachFromChat(chatId)  // ← было closeChat, теперь detachFromChat
         }
 
         super.onCleared()
+    }
+    private fun loadMuteStatus() {
+        viewModelScope.launch {
+            isMuted = repository.getChatMuted(chatId)
+        }
+    }
+
+    fun toggleMute() {
+        viewModelScope.launch {
+            val newMuted = !isMuted
+            repository.setChatMuted(chatId, newMuted)
+            isMuted = newMuted
+        }
     }
 }

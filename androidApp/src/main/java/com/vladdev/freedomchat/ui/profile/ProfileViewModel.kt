@@ -87,6 +87,12 @@ class ProfileViewModel(
         private set
     var transferSignKey by mutableStateOf<String?>(null)
         private set
+    var showTransferConfirmDialog by mutableStateOf(false)
+        private set
+    var transferPassword by mutableStateOf("")
+        private set
+    var transferPasswordError by mutableStateOf<String?>(null)
+        private set
 
     init { loadProfile() }
 
@@ -227,7 +233,47 @@ class ProfileViewModel(
         }
     }
 
+    fun openTransferConfirmDialog() {
+        showTransferConfirmDialog = true
+        transferPassword = ""
+        transferPasswordError = null
+    }
 
+    fun closeTransferConfirmDialog() {
+        showTransferConfirmDialog = false
+        transferPassword = ""
+        transferPasswordError = null
+    }
+
+    fun onTransferPasswordChange(v: String) {
+        transferPassword = v
+        transferPasswordError = null
+    }
+
+    fun submitTransferWithPassword() {
+        viewModelScope.launch {
+            isLoading = true
+            // Верифицируем пароль через существующий метод
+            val ok = repository.verifyPassword(transferPassword)
+            if (!ok) {
+                transferPasswordError = "Неверный пароль"
+                isLoading = false
+                return@launch
+            }
+            // Пароль верный — закрываем диалог и запрашиваем challenge
+            closeTransferConfirmDialog()
+            val signKey = identityStorage.getSignKey()
+            repository.requestTransferChallenge()
+                .onSuccess { response ->
+                    transferSignKey   = signKey
+                    transferChallenge = response.challenge
+                    transferExpiresAt = response.expiresAt
+                    showTransferSheet = true
+                }
+                .onFailure { transferPasswordError = it.message }
+            isLoading = false
+        }
+    }
 
     fun closeTransfer() {
         showTransferSheet = false

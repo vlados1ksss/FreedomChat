@@ -66,8 +66,8 @@ fun MessageItem(
     showTail: Boolean,
     onDelete: (messageId: String, forAll: Boolean) -> Unit
 ) {
-
     val displayText = message.displayText
+    if (displayText == null) return
     val isOwn = message.senderId == currentUserId
     var showMenu by remember { mutableStateOf(false) }
 
@@ -122,10 +122,9 @@ fun MessageItem(
                     .padding(bottom = if (showTail) 8.dp else 0.dp)
             ) {
                 Text(
-                    text = displayText ?: "Сообщение удалено",
-                    color = if (displayText == null) textColor.copy(alpha = 0.5f) else textColor,
-                    fontStyle = if (message.deletedForAll || displayText == null)
-                        FontStyle.Italic else FontStyle.Normal,
+                    text = displayText,
+                    color = textColor,
+                    fontStyle = FontStyle.Normal,
                     style = MaterialTheme.typography.bodyLarge
                 )
                 Spacer(Modifier.height(2.dp))

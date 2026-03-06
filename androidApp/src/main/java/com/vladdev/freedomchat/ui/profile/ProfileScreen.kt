@@ -265,7 +265,7 @@ fun ProfileScreen(
                 }
 
                 OutlinedButton(
-                    onClick  = viewModel::openTransfer,
+                    onClick  = viewModel::openTransferConfirmDialog,
                     modifier = Modifier.fillMaxWidth().height(52.dp),
                     shape    = RoundedCornerShape(16.dp)
                 ) {
@@ -326,6 +326,10 @@ fun ProfileScreen(
             expiresAt = viewModel.transferExpiresAt,
             onDismiss = viewModel::closeTransfer
         )
+    }
+
+    if (viewModel.showTransferConfirmDialog) {
+        TransferConfirmDialog(vm = viewModel)
     }
 }
 
@@ -634,24 +638,24 @@ fun TransferBottomSheet(
                     else
                         MaterialTheme.colorScheme.onSurfaceVariant
                 )
-            }
-            // Временно под QR кодом
-            Text(
-                text = "QR data length: ${qrData.length}",
-                style = MaterialTheme.typography.bodySmall
-            )
-            Text(
-                text = "userId: ${userId.take(8)}...",
-                style = MaterialTheme.typography.bodySmall
-            )
-            Text(
-                text = "challenge: ${challenge.take(8)}...",
-                style = MaterialTheme.typography.bodySmall
-            )
-            Text(
-                text = "signKey: ${signKey?.take(20)}...",
-                style = MaterialTheme.typography.bodySmall
-            )
+        }
+//            // Временно под QR кодом
+//            Text(
+//                text = "QR data length: ${qrData.length}",
+//                style = MaterialTheme.typography.bodySmall
+//            )
+//            Text(
+//                text = "userId: ${userId.take(8)}...",
+//                style = MaterialTheme.typography.bodySmall
+//            )
+//            Text(
+//                text = "challenge: ${challenge.take(8)}...",
+//                style = MaterialTheme.typography.bodySmall
+//            )
+//            Text(
+//                text = "signKey: ${signKey?.take(20)}...",
+//                style = MaterialTheme.typography.bodySmall
+//            )
 
             Spacer(Modifier.height(16.dp))
 
@@ -659,5 +663,49 @@ fun TransferBottomSheet(
                 Text("Закрыть")
             }
         }
+    }
+}
+
+@Composable
+private fun TransferConfirmDialog(vm: ProfileViewModel) {
+    FreedomChatTheme {
+        AlertDialog(
+            onDismissRequest = vm::closeTransferConfirmDialog,
+            title = { Text("Перенос аккаунта") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text(
+                        "Введите пароль для подтверждения переноса аккаунта на новое устройство",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    DialogPasswordField(
+                        value       = vm.transferPassword,
+                        onValueChange = vm::onTransferPasswordChange,
+                        label       = "Пароль",
+                        error       = vm.transferPasswordError
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick  = vm::submitTransferWithPassword,
+                    enabled  = vm.transferPassword.isNotBlank() && !vm.isLoading
+                ) {
+                    if (vm.isLoading) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(16.dp),
+                            strokeWidth = 2.dp,
+                            color = MaterialTheme.colorScheme.onPrimary
+                        )
+                    } else {
+                        Text("Подтвердить")
+                    }
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = vm::closeTransferConfirmDialog) { Text("Отмена") }
+            }
+        )
     }
 }
