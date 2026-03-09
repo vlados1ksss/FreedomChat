@@ -10,3 +10,9 @@ sealed class WsIncomingEvent
 data class IncomingMessage @OptIn(InternalSerializationApi::class) constructor(val message: MessageDto) : WsIncomingEvent()
 data class IncomingStatus(val messageId: String, val userId: String, val status: MessageStatus) : WsIncomingEvent()
 data class IncomingDelete(val messageId: String, val deleteForAll: Boolean) : WsIncomingEvent()
+data class IncomingEdit(
+    val messageId: String,
+    val senderId: String,        // ← добавить
+    val encryptedContent: String,
+    val editedAt: Long?
+) : WsIncomingEvent()

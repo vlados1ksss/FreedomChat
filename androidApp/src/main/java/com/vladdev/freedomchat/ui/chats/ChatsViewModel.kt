@@ -22,14 +22,16 @@ import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import com.vladdev.shared.chats.IncomingDelete
+import com.vladdev.shared.chats.IncomingEdit
 import com.vladdev.shared.chats.IncomingMessage
 import com.vladdev.shared.chats.IncomingStatus
 import com.vladdev.shared.chats.WsIncomingEvent
 import com.vladdev.shared.chats.dto.MessageStatus
 import com.vladdev.shared.chats.dto.MessageStatusDto
+import com.vladdev.shared.crypto.E2eeManager
 
 @OptIn(InternalSerializationApi::class)
-class ChatsViewModel(private val repository: ChatRepository, private val dataStore: DataStore<Preferences>, private val currentUserId: String?    ) : ViewModel() {
+class ChatsViewModel(private val repository: ChatRepository,private val dataStore: DataStore<Preferences>, private val currentUserId: String?    ) : ViewModel() {
 
     var chats by mutableStateOf<List<ChatDto>>(emptyList())
         private set
@@ -178,6 +180,27 @@ class ChatsViewModel(private val repository: ChatRepository, private val dataSto
                     if (chat.lastMessage?.id == event.messageId) {
                         chat.copy(lastMessage = null)
                     } else chat
+                }
+            }
+            is IncomingEdit -> {
+                viewModelScope.launch {
+                    val plaintext = repository.decryptEditPreview(
+                        chatId           = chatId,
+                        messageId        = event.messageId,
+                        encryptedContent = event.encryptedContent,
+                        myUserId         = currentUserId ?: "",
+                        senderId         = event.senderId    // ← передаём
+                    )
+                    chats = chats.map { chat ->
+                        if (chat.chatId != chatId) return@map chat
+                        if (chat.lastMessage?.id != event.messageId) return@map chat
+                        chat.copy(
+                            lastMessage = chat.lastMessage!!.copy(
+                                plaintextPreview = plaintext,
+                                editedAt = event.editedAt
+                            )
+                        )
+                    }
                 }
             }
         }

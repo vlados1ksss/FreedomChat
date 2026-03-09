@@ -12,7 +12,10 @@ data class DecryptedMessage @OptIn(InternalSerializationApi::class) constructor(
     val createdAt: Long,
     val deletedForAll: Boolean = false,
     val isUnavailable: Boolean = false,
-    val statuses: List<MessageStatusDto> = emptyList()
+    val statuses: List<MessageStatusDto> = emptyList(),
+    val editedAt: Long? = null,
+    val replyToId: String? = null,
+    val replyToSenderId: String? = null
 ) {
     val isDeleted get() = deletedForAll
     val displayText get() = when {

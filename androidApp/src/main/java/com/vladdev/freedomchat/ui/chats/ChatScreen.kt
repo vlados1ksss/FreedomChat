@@ -68,6 +68,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.vladdev.freedomchat.R
@@ -114,6 +115,15 @@ fun ChatScreen(
         }
     }
     val messagesCount = messages.size
+
+    val selectedMessages = viewModel.selectedMessages
+    val isMultiSelectMode = viewModel.isMultiSelectMode
+
+    suspend fun scrollToMessage(messageId: String) {
+        val index = messages.indexOfFirst { it.id == messageId }
+        if (index != -1) listState.animateScrollToItem(index)
+    }
+
 
     LaunchedEffect(messages.size) {
         if (messages.isEmpty()) return@LaunchedEffect
@@ -175,9 +185,20 @@ fun ChatScreen(
                         MessageItem(
                             message = message,
                             currentUserId = currentUserId,
+                            messages = messages,
                             showTail = showTail,
-                            onDelete = { id, forAll -> viewModel.deleteMessage(id, forAll) }
+                            isSelected = selectedMessages.contains(message.id),
+                            isMultiSelectMode = isMultiSelectMode,
+                            onDelete = { id, forAll -> viewModel.deleteMessage(id, forAll) },
+                            onReply = { viewModel.startReply(it) },
+                            onEdit = { viewModel.startEdit(it) },
+                            onSelect = { viewModel.toggleMessageSelection(it.id) },
+                            onEnterMultiSelect = { viewModel.enterMultiSelect(it.id) },
+                            onScrollToMessage = { id -> scope.launch { scrollToMessage(id) } },
+                            interlocutorUsername = interlocutorUsername,
+                            interlocutorUserId   = interlocutorUserId,
                         )
+
 
                         // Показываем разделитель ПОСЛЕ рендера сообщения (визуально — над ним,
                         // т.к. reverseLayout = true) если день изменился или это последнее сообщение
@@ -231,35 +252,60 @@ fun ChatScreen(
                         Text("Новые сообщения")
                     }
                 }
+                Column(modifier = Modifier.align(Alignment.BottomCenter)) {
 
-                ChatInputField(
-                    value = viewModel.newMessage,
-                    onValueChange = viewModel::onMessageChange,
-                    onSend = {
-                        if (viewModel.newMessage.isNotBlank()) {
-                            viewModel.sendMessage()
-                            scope.launch {
-                                listState.animateScrollToItem(0)
-                            }
+                    // Панель "Ответ на сообщение"
+                    viewModel.replyTo?.let { reply ->
+                        val authorName = when (reply.senderId) {
+                            currentUserId      -> "Вы"
+                            interlocutorUserId -> interlocutorUsername
+                            else               -> "Неизвестно"
                         }
-                    },
-                    modifier = Modifier.align(Alignment.BottomCenter)
-                )
-            }
-        }
+                        ReplyEditBar(
+                            label   = authorName,
+                            preview = reply.text ?: "",
+                            onCancel = { viewModel.cancelReply() }
+                        )
+                    }
 
-        LaunchedEffect(messagesCount) {
-            if (viewModel.isScrollToBottomPending || isAtBottom) {
-                listState.animateScrollToItem(0)
-                if (viewModel.isScrollToBottomPending) {
-                    viewModel.onScrolledToBottom()
+                    // Панель "Редактирование"
+                    viewModel.editingMessage?.let { editing ->
+                        ReplyEditBar(
+                            label = "Редактирование",
+                            preview = editing.text ?: "",
+                            onCancel = { viewModel.cancelEdit() }
+                        )
+                    }
+
+                    // Панель мультиселекта вместо инпута
+                    if (isMultiSelectMode) {
+                        MultiSelectBar(
+                            count = selectedMessages.size,
+                            onDeleteForMe = { viewModel.deleteSelectedMessages(false) },
+                            onDeleteForAll = { viewModel.deleteSelectedMessages(true) },
+                            onCancel = { viewModel.exitMultiSelect() }
+                        )
+                    } else {
+                        ChatInputField(
+                            value = viewModel.newMessage,
+                            onValueChange = viewModel::onMessageChange,
+                            onSend = { if (viewModel.newMessage.isNotBlank()) viewModel.sendMessage() }
+                        )
+                    }
                 }
-            }
-        }
-
-        LaunchedEffect(viewModel.lastSentMessageId) {
-            viewModel.lastSentMessageId?.let {
-                listState.animateScrollToItem(0)
+//                ChatInputField(
+//                    value = viewModel.newMessage,
+//                    onValueChange = viewModel::onMessageChange,
+//                    onSend = {
+//                        if (viewModel.newMessage.isNotBlank()) {
+//                            viewModel.sendMessage()
+//                            scope.launch {
+//                                listState.animateScrollToItem(0)
+//                            }
+//                        }
+//                    },
+//                    modifier = Modifier.align(Alignment.BottomCenter)
+//                )
             }
         }
     }
@@ -470,6 +516,72 @@ fun formatDateSeparator(timestamp: Long): String {
             // Если год не текущий — добавляем год
             val year = messageDate.get(Calendar.YEAR)
             if (year != today.get(Calendar.YEAR)) "$day $month $year г." else "$day $month"
+        }
+    }
+}
+
+@Composable
+fun ReplyEditBar(label: String, preview: String, onCancel: () -> Unit) {
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier
+                    .width(3.dp).height(36.dp)
+                    .background(MaterialTheme.colorScheme.primary, RoundedCornerShape(2.dp))
+            )
+            Spacer(Modifier.width(12.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    label,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                Text(
+                    preview,
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            IconButton(onClick = onCancel) {
+                Icon(painterResource(R.drawable.close), contentDescription = null)
+            }
+        }
+    }
+}
+
+@Composable
+fun MultiSelectBar(count: Int, onDeleteForMe: () -> Unit, onDeleteForAll: () -> Unit, onCancel: () -> Unit) {
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        shadowElevation = 4.dp
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            IconButton(onClick = onCancel) {
+                Icon(painterResource(R.drawable.close), contentDescription = null)
+            }
+            Text(
+                "$count выбрано",
+                modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.titleMedium
+            )
+            IconButton(onClick = onDeleteForMe) {
+                Icon(painterResource(R.drawable.delete), contentDescription = "Удалить у себя")
+            }
+            IconButton(onClick = onDeleteForAll) {
+                Icon(painterResource(R.drawable.delete_forever), contentDescription = "Удалить у всех")
+            }
         }
     }
 }

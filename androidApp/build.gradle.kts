@@ -14,8 +14,8 @@ android {
         applicationId = "com.vladdev.freedomchat"
         minSdk = 29
         targetSdk = 36
-        versionCode = 7
-        versionName = "alfa-1.4.2"
+        versionCode = 9
+        versionName = "beta-2.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

@@ -22,7 +22,7 @@ import kotlinx.serialization.InternalSerializationApi
 import kotlinx.serialization.json.Json
 
 class ProfileApi(private val client: HttpClient) {
-    private val baseUrl = "http://192.168.31.191:8080"
+    private val baseUrl = "http://176.124.199.31:8080"
 //    private val baseUrl = "https://6fa43409c383f2.lhr.life"
     @OptIn(InternalSerializationApi::class)
     suspend fun getProfile(): UserProfileResponse =

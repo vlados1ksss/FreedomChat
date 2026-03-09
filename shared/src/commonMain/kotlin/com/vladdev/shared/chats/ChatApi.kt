@@ -9,6 +9,7 @@ import com.vladdev.shared.chats.dto.MessageStatus
 import com.vladdev.shared.chats.dto.RequestIdResponse
 import com.vladdev.shared.chats.dto.SearchUserResponse
 import com.vladdev.shared.chats.dto.WsDeleteEvent
+import com.vladdev.shared.chats.dto.WsEditEvent
 import com.vladdev.shared.chats.dto.WsMessageEvent
 import com.vladdev.shared.chats.dto.WsStatusEvent
 import com.vladdev.shared.storage.TokenStorage
@@ -29,9 +30,11 @@ import io.ktor.http.takeFrom
 import io.ktor.websocket.Frame
 import io.ktor.websocket.close
 import io.ktor.websocket.readText
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.InternalSerializationApi
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -45,11 +48,9 @@ class ChatApi(private val client: HttpClient, private val tokenStorage: TokenSto
         encodeDefaults = true
         ignoreUnknownKeys = true
     }
-    private val baseUrl = "http://192.168.31.191:8080"
-    private val baseWsUrl = "ws://192.168.31.191:8080"
-
-//    private val baseWsUrl = "wss://6fa43409c383f2.lhr.life"
-//    private val baseUrl = "https://6fa43409c383f2.lhr.life"
+//    private val baseUrl = "http://192.168.31.191:8080"
+    private val baseWsUrl = "ws://176.124.199.31:8080"
+    private val baseUrl = "http://176.124.199.31:8080"
 
     private val wsConnections = mutableMapOf<String, DefaultClientWebSocketSession>()
 
@@ -122,9 +123,16 @@ class ChatApi(private val client: HttpClient, private val tokenStorage: TokenSto
                             .jsonObject["type"]?.jsonPrimitive?.content
 
                         val event: WsIncomingEvent = when (type) {
-                            "message" -> IncomingMessage(
-                                Json.decodeFromString<WsMessageEvent>(text).message
-                            )
+                            "message" -> {
+                                val wsEvent = Json.decodeFromString<WsMessageEvent>(text)
+
+                                // Резолвим pending если это эхо нашего сообщения
+                                if (wsEvent.message.id.isNotEmpty()) {
+                                    resolvePendingMessage(chatId, wsEvent.message.id)
+                                }
+
+                                IncomingMessage(wsEvent.message)
+                            }
                             "status" -> {
                                 val e = Json.decodeFromString<WsStatusEvent>(text)
                                 IncomingStatus(e.messageId, e.userId, e.status)
@@ -132,6 +140,11 @@ class ChatApi(private val client: HttpClient, private val tokenStorage: TokenSto
                             "delete" -> {
                                 val e = Json.decodeFromString<WsDeleteEvent>(text)
                                 IncomingDelete(e.messageId, e.deleteForAll)
+                            }
+                            "edit" -> {
+                                val e = Json.decodeFromString<WsEditEvent>(text)
+                                if (e.messageId.isNotEmpty()) resolvePendingMessage(chatId, e.messageId)
+                                IncomingEdit(e.messageId, e.senderId, e.encryptedContent, e.editedAt)
                             }
                             else -> continue
                         }
@@ -145,17 +158,34 @@ class ChatApi(private val client: HttpClient, private val tokenStorage: TokenSto
         }
     }
 
-    suspend fun sendMessageWS(chatId: String, encryptedContent: String) {
+    suspend fun sendMessageWS(
+        chatId: String,
+        encryptedContent: String,
+        replyToId: String? = null,
+        replyToPreview: String? = null
+    ): String {
         val session = wsConnections[chatId] ?: throw IllegalStateException("WS not open")
+        val pendingId = CompletableDeferred<String>()
+        pendingMessages[chatId] = pendingId
+
         val event = WsMessageEvent(
             message = MessageDto(
                 id = "", chatId = chatId, senderId = "",
                 encryptedContent = encryptedContent, createdAt = 0
-            )
+            ),
+            replyToId = replyToId,
+            replyToPreview = replyToPreview
         )
         session.send(Frame.Text(AppJson.encodeToString(event)))
+        return withTimeout(5000) { pendingId.await() }
     }
 
+    private val pendingMessages = mutableMapOf<String, CompletableDeferred<String>>()
+
+    // Вызывать из frame-loop когда приходит эхо своего сообщения:
+    fun resolvePendingMessage(chatId: String, messageId: String) {
+        pendingMessages.remove(chatId)?.complete(messageId)
+    }
     suspend fun sendReadWS(chatId: String, messageId: String, userId: String) {
         val session = wsConnections[chatId] ?: return
         val event = WsStatusEvent(
@@ -168,6 +198,12 @@ class ChatApi(private val client: HttpClient, private val tokenStorage: TokenSto
     suspend fun deleteMessageWS(chatId: String, messageId: String, forAll: Boolean) {
         val session = wsConnections[chatId] ?: return
         val event = WsDeleteEvent(messageId = messageId, deleteForAll = forAll)
+        session.send(Frame.Text(AppJson.encodeToString(event)))
+    }
+
+    suspend fun sendEditWS(chatId: String, senderId: String, messageId: String, encryptedContent: String) {
+        val session = wsConnections[chatId] ?: throw IllegalStateException("WS not open")
+        val event = WsEditEvent(messageId = messageId, senderId = senderId, encryptedContent = encryptedContent, editedAt = 0)
         session.send(Frame.Text(AppJson.encodeToString(event)))
     }
 

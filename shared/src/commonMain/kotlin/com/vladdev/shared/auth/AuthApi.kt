@@ -22,7 +22,7 @@ import kotlinx.serialization.InternalSerializationApi
 
 @OptIn(InternalSerializationApi::class)
 class AuthApi(private val client: HttpClient) {
-    private val baseUrl = "http://192.168.31.191:8080"
+    private val baseUrl = "http://176.124.199.31:8080"
 //    private val baseUrl = "https://6fa43409c383f2.lhr.life"
     suspend fun register(
         username: String, name: String, email: String,

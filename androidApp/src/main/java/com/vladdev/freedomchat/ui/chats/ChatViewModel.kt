@@ -4,6 +4,7 @@ import android.app.Application
 import android.content.Context
 import android.util.Log
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
@@ -12,6 +13,7 @@ import androidx.lifecycle.viewModelScope
 import com.vladdev.freedomchat.MainApplication
 import com.vladdev.shared.chats.ChatRepository
 import com.vladdev.shared.chats.IncomingDelete
+import com.vladdev.shared.chats.IncomingEdit
 import com.vladdev.shared.chats.IncomingMessage
 import com.vladdev.shared.chats.IncomingStatus
 import com.vladdev.shared.chats.dto.DecryptedMessage
@@ -25,6 +27,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.serialization.InternalSerializationApi
+import java.util.UUID
 
 @OptIn(InternalSerializationApi::class)
 class ChatViewModel(
@@ -57,7 +60,13 @@ class ChatViewModel(
 
     var isMuted by mutableStateOf(false)
         private set
-
+    var replyTo by mutableStateOf<DecryptedMessage?>(null)
+        private set
+    var editingMessage by mutableStateOf<DecryptedMessage?>(null)
+        private set
+    val selectedMessages = mutableStateListOf<String>()  // ids
+    var isMultiSelectMode by mutableStateOf(false)
+        private set
 
     init {
         app.activeChatId = chatId
@@ -69,31 +78,110 @@ class ChatViewModel(
     fun onMessageChange(text: String) {
         newMessage = text
     }
+    fun startReply(message: DecryptedMessage) { replyTo = message }
+    fun cancelReply() { replyTo = null }
 
+    fun startEdit(message: DecryptedMessage) {
+        editingMessage = message
+        newMessage = message.text ?: ""
+    }
+    fun cancelEdit() {
+        editingMessage = null
+        newMessage = ""
+    }
+
+    fun toggleMessageSelection(messageId: String) {
+        if (selectedMessages.contains(messageId)) {
+            selectedMessages.remove(messageId)
+            if (selectedMessages.isEmpty()) isMultiSelectMode = false
+        } else {
+            selectedMessages.add(messageId)
+        }
+    }
+
+    fun enterMultiSelect(messageId: String) {
+        isMultiSelectMode = true
+        selectedMessages.clear()
+        selectedMessages.add(messageId)
+    }
+
+    fun exitMultiSelect() {
+        isMultiSelectMode = false
+        selectedMessages.clear()
+    }
+
+    fun deleteSelectedMessages(forAll: Boolean) {
+        val ids = selectedMessages.toList()
+        viewModelScope.launch {
+            try {
+                repository.deleteMessages(chatId, ids, forAll)
+                exitMultiSelect()
+            } catch (e: Exception) {
+                error = "Не удалось удалить сообщения"
+            }
+        }
+    }
     fun sendMessage() {
         if (newMessage.isBlank()) return
+
+        // Если редактируем
+        editingMessage?.let { editing ->
+            val updatedText = newMessage
+            newMessage = ""
+            editingMessage = null
+
+            // Оптимистично обновляем UI сразу
+            _messages.update { old ->
+                old.map { msg ->
+                    if (msg.id != editing.id) msg
+                    else msg.copy(
+                        text     = updatedText,
+                        editedAt = System.currentTimeMillis()
+                    )
+                }
+            }
+
+            viewModelScope.launch {
+                try {
+                    repository.editMessage(chatId, editing.id, updatedText, theirUserId)
+                } catch (e: Exception) {
+                    // Откатываем при ошибке
+                    _messages.update { old ->
+                        old.map { msg ->
+                            if (msg.id != editing.id) msg
+                            else msg.copy(text = editing.text, editedAt = editing.editedAt)
+                        }
+                    }
+                    error = "Не удалось изменить сообщение"
+                }
+            }
+            return
+        }
+
         val messageToSend = newMessage
+        val reply = replyTo
         newMessage = ""
+        replyTo = null
 
         viewModelScope.launch {
-            // Optimistic insert — показываем сразу с известным текстом
+            val tempId = "optimistic_${UUID.randomUUID()}"
             val optimistic = DecryptedMessage(
-                id            = "",   // id придёт с сервера через эхо
-                chatId        = chatId,
-                senderId      = currentUserId ?: "",
-                text          = messageToSend,
-                createdAt     = System.currentTimeMillis(),
+                id = tempId,
+                chatId = chatId,
+                senderId = currentUserId ?: "",
+                text = messageToSend,
+                createdAt = System.currentTimeMillis(),
                 deletedForAll = false,
-                statuses      = emptyList()
+                statuses = emptyList(),
+                replyToId = reply?.id,
+                replyToSenderId = reply?.senderId
             )
             _messages.update { listOf(optimistic) + it }
-
             try {
-                repository.sendMessage(chatId, messageToSend, theirUserId)
+                repository.sendMessage(chatId, messageToSend, theirUserId, reply?.id)
                 isScrollToBottomPending = true
             } catch (e: Exception) {
-                // Откатываем optimistic insert при ошибке
-                _messages.update { it.filterNot { m -> m === optimistic } }
+                _messages.update { it.filterNot { m -> m.id == tempId } }
                 error = "Не удалось отправить сообщение"
             }
         }
@@ -153,18 +241,17 @@ class ChatViewModel(
                             // текст берём из уже добавленного optimistic сообщения
                             if (msg.senderId == currentUserId) {
                                 _messages.update { old ->
-                                    // Если сообщение уже есть (optimistic insert) — обновляем id и статусы
+                                    // Ищем optimistic по префиксу вместо пустого id
                                     val existing = old.firstOrNull {
-                                        it.senderId == currentUserId && it.id.isEmpty()
+                                        it.senderId == currentUserId && it.id.startsWith("optimistic_")
                                     }
                                     if (existing != null) {
                                         old.map {
-                                            if (it === existing) it.copy(id = msg.id, statuses = msg.statuses)
+                                            if (it.id == existing.id) it.copy(id = msg.id, statuses = msg.statuses)
                                             else it
                                         }
                                     } else {
-                                        // Эхо без optimistic — добавляем с известным текстом из sendMessage
-                                        old  // просто игнорируем эхо, текст уже показан
+                                        old
                                     }
                                 }
                                 return@collect
@@ -220,6 +307,26 @@ class ChatViewModel(
                                     old.filterNot { it.id == event.messageId }
                                 } else {
                                     old.filterNot { it.id == event.messageId }
+                                }
+                            }
+                        }
+
+                        is IncomingEdit -> {
+                            viewModelScope.launch {
+                                val plaintext = if (event.senderId == currentUserId) {
+                                    e2ee.getOutgoingPlaintext(chatId, event.messageId)
+                                } else {
+                                    e2ee.decryptMessage(chatId, event.encryptedContent)
+                                }
+
+                                _messages.update { old ->
+                                    old.map { msg ->
+                                        if (msg.id != event.messageId) msg
+                                        else msg.copy(
+                                            text     = plaintext ?: msg.text,
+                                            editedAt = event.editedAt
+                                        )
+                                    }
                                 }
                             }
                         }

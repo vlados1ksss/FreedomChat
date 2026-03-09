@@ -10,7 +10,15 @@ interface RatchetStorage {
     suspend fun loadState(chatId: String): RatchetState?
     suspend fun clearState(chatId: String)
     suspend fun clearAll()
-    suspend fun saveOutgoing(chatId: String, index: Int, plaintext: String)
-    suspend fun loadOutgoing(chatId: String, index: Int): String?
-}
 
+    // Новые методы по messageId
+    suspend fun saveOutgoing(chatId: String, messageId: String, plaintext: String)
+    suspend fun loadOutgoing(chatId: String, messageId: String): String?
+
+    // Старые методы — помечаем deprecated, реализуем как no-op
+    @Deprecated("Use saveOutgoing(chatId, messageId, plaintext)")
+    suspend fun saveOutgoing(chatId: String, index: Int, plaintext: String) { /* no-op */ }
+
+    @Deprecated("Use loadOutgoing(chatId, messageId)")
+    suspend fun loadOutgoing(chatId: String, index: Int): String? = null  // ← вот этот null не ломает старые сообщения
+}

@@ -17,8 +17,6 @@ class E2eeManager(
 ) {
     private val json = Json { ignoreUnknownKeys = true }
 
-    private val outgoingCache = mutableMapOf<String, String>()  // messageId → plaintext
-
     suspend fun encryptMessage(
         chatId: String,
         plaintext: String,
@@ -45,14 +43,14 @@ class E2eeManager(
             messageIndex    = currentIndex,
             senderPublicKey = myPubKey
         )
-
-        // Кэшируем plaintext для истории
-        ratchetStorage.saveOutgoing(chatId, currentIndex, plaintext)
-
         return Base64Helper.encode(json.encodeToString(payload).encodeToByteArray())
     }
-    suspend fun getOutgoingPlaintext(chatId: String, index: Int): String? =
-        ratchetStorage.loadOutgoing(chatId, index)
+    suspend fun saveOutgoingPlaintext(chatId: String, messageId: String, plaintext: String) {
+        ratchetStorage.saveOutgoing(chatId, messageId, plaintext)
+    }
+
+    suspend fun getOutgoingPlaintext(chatId: String, messageId: String): String? =
+        ratchetStorage.loadOutgoing(chatId, messageId)
     suspend fun decryptMessage(
         chatId: String,
         encryptedContent: String

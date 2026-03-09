@@ -37,18 +37,20 @@ class ChatRepository(
             getOrCreateFlow(chatId).tryEmit(event)
         }
     }
-    suspend fun sendMessage(chatId: String, plaintext: String, theirUserId: String) {
-        // Получаем pubkey собеседника с сервера
+    suspend fun sendMessage(
+        chatId: String,
+        plaintext: String,
+        theirUserId: String,
+        replyToId: String? = null, // уже расшифрованный текст оригинала — передаём как есть
+    ) {
         val theirPublicKey = api.getPublicKey(theirUserId).publicKey
-
-        // Шифруем
-        val encryptedContent = e2ee.encryptMessage(
-            chatId         = chatId,
-            plaintext      = plaintext,
-            theirPublicKeyHex = theirPublicKey
+        val encryptedContent = e2ee.encryptMessage(chatId, plaintext, theirPublicKey)
+        val messageId = api.sendMessageWS(
+            chatId = chatId,
+            encryptedContent = encryptedContent,
+            replyToId = replyToId
         )
-
-        api.sendMessageWS(chatId, encryptedContent)
+        e2ee.saveOutgoingPlaintext(chatId, messageId, plaintext)
     }
 
     suspend fun getMessages(chatId: String, myUserId: String): List<DecryptedMessage> {
@@ -60,26 +62,19 @@ class ChatRepository(
                 msg.encryptedContent.isBlank() -> null
 
                 msg.senderId == myUserId -> {
-                    val plaintext = runCatching {
-                        val payloadBytes = Base64Helper.decode(msg.encryptedContent)
-                        val payload = Json.decodeFromString<EncryptedPayload>(
-                            payloadBytes.decodeToString()
-                        )
-                        e2ee.getOutgoingPlaintext(chatId, payload.messageIndex)
-                    }.getOrNull()
-
-                    if (plaintext == null) {
-                        null
-                    } else {
-                        DecryptedMessage(
-                            id        = msg.id,
-                            chatId    = msg.chatId,
-                            senderId  = msg.senderId,
-                            text      = plaintext,
-                            createdAt = msg.createdAt,
-                            statuses  = msg.statuses
-                        )
-                    }
+                    val plaintext = e2ee.getOutgoingPlaintext(chatId, msg.id)
+                    if (plaintext == null) null
+                    else DecryptedMessage(
+                        id               = msg.id,
+                        chatId           = msg.chatId,
+                        senderId         = msg.senderId,
+                        text             = plaintext,
+                        createdAt        = msg.createdAt,
+                        statuses         = msg.statuses,
+                        editedAt         = msg.editedAt,
+                        replyToId        = msg.replyToId,
+                        replyToSenderId  = null
+                    )
                 }
 
                 else -> {
@@ -93,7 +88,9 @@ class ChatRepository(
                             senderId  = msg.senderId,
                             text      = plaintext,
                             createdAt = msg.createdAt,
-                            statuses  = msg.statuses
+                            statuses  = msg.statuses,
+                            replyToId       = msg.replyToId,
+                            replyToSenderId = null
                         )
                     }
                 }
@@ -103,6 +100,28 @@ class ChatRepository(
 
     suspend fun sendRead(chatId: String, messageId: String, userId: String) {
         api.sendReadWS(chatId, messageId, userId)
+    }
+
+    // ChatRepository
+    suspend fun editMessage(chatId: String, messageId: String, newPlaintext: String, theirUserId: String) {
+        val theirPublicKey = api.getPublicKey(theirUserId).publicKey
+        val encrypted = e2ee.encryptMessage(chatId, newPlaintext, theirPublicKey)
+
+        // Сначала сохраняем локально — до отправки по WS
+        e2ee.saveOutgoingPlaintext(chatId, messageId, newPlaintext)
+
+        api.sendEditWS(
+            chatId           = chatId,
+            messageId        = messageId,
+            senderId         = userIdStorage.getUID() ?: "",
+            encryptedContent = encrypted
+        )
+    }
+
+    suspend fun deleteMessages(chatId: String, messageIds: List<String>, forAll: Boolean) {
+        messageIds.forEach { id ->
+            api.deleteMessageWS(chatId, id, forAll)
+        }
     }
 
     suspend fun deleteMessage(chatId: String, messageId: String, forAll: Boolean) {
@@ -154,10 +173,7 @@ class ChatRepository(
 
         val plaintext: String? = runCatching {
             if (msg.senderId == myUserId) {
-                // Своё сообщение — берём из локального хранилища
-                val payloadBytes = Base64Helper.decode(msg.encryptedContent)
-                val payload = Json.decodeFromString<EncryptedPayload>(payloadBytes.decodeToString())
-                e2ee.getOutgoingPlaintext(chatId, payload.messageIndex)
+                e2ee.getOutgoingPlaintext(chatId, msg.id)
             } else {
                 // Чужое — расшифровываем
                 e2ee.decryptMessage(chatId, msg.encryptedContent)
@@ -176,15 +192,26 @@ class ChatRepository(
         if (msg.deletedForAll || msg.encryptedContent.isBlank()) return null
         return runCatching {
             if (msg.senderId == myUserId) {
-                // Исходящее — берём из локального хранилища
-                val payloadBytes = Base64Helper.decode(msg.encryptedContent)
-                val payload = Json.decodeFromString<EncryptedPayload>(payloadBytes.decodeToString())
-                e2ee.getOutgoingPlaintext(chatId, payload.messageIndex)
-            } else {
+                e2ee.getOutgoingPlaintext(chatId, msg.id)
+            }  else {
                 e2ee.decryptMessage(chatId, msg.encryptedContent)
             }
         }.getOrNull()
     }
+    suspend fun decryptEditPreview(
+        chatId: String,
+        messageId: String,
+        encryptedContent: String,
+        myUserId: String,
+        senderId: String
+    ): String? = runCatching {
+        if (senderId == myUserId) {
+            e2ee.getOutgoingPlaintext(chatId, messageId)
+        } else {
+            e2ee.decryptMessage(chatId, encryptedContent)
+        }
+    }.getOrNull()
+
 
     suspend fun markChatAsRead(chatId: String): Result<Unit> =
         runCatching { api.markChatAsRead(chatId) }

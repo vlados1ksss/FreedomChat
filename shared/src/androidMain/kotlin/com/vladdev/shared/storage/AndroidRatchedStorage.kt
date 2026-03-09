@@ -10,7 +10,6 @@ import kotlinx.serialization.json.Json
 
 class AndroidRatchetStorage(context: Context) : RatchetStorage {
 
-    // Используем EncryptedSharedPreferences через MasterKey
     private val masterKey = MasterKey.Builder(context)
         .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
         .build()
@@ -43,16 +42,13 @@ class AndroidRatchetStorage(context: Context) : RatchetStorage {
     override suspend fun clearAll() {
         prefs.edit().clear().apply()
     }
-    override suspend fun saveOutgoing(chatId: String, index: Int, plaintext: String) {
-        val key = "out_${chatId.replace("-", "")}_$index"
+    override suspend fun saveOutgoing(chatId: String, messageId: String, plaintext: String) {
+        val key = "out_${chatId.replace("-", "")}_${messageId.replace("-", "")}"
         prefs.edit().putString(key, plaintext).apply()
-        println("RatchetStorage: saved outgoing key=$key text=${plaintext.take(20)}")
     }
 
-    override suspend fun loadOutgoing(chatId: String, index: Int): String? {
-        val key = "out_${chatId.replace("-", "")}_$index"
-        val result = prefs.getString(key, null)
-        println("RatchetStorage: load outgoing key=$key found=${result != null}")
-        return result
+    override suspend fun loadOutgoing(chatId: String, messageId: String): String? {
+        val key = "out_${chatId.replace("-", "")}_${messageId.replace("-", "")}"
+        return prefs.getString(key, null)
     }
 }
