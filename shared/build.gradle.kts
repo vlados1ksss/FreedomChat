@@ -72,8 +72,7 @@ kotlin {
                 implementation("io.ktor:ktor-client-logging:2.3.7")
                 implementation("io.ktor:ktor-client-websockets:2.3.7")
                 implementation("io.ktor:ktor-client-cio:2.3.7")
-
-
+                implementation("androidx.security:security-crypto:1.1.0-alpha06")
             }
         }
 
@@ -87,6 +86,12 @@ kotlin {
         androidMain {
             dependencies {
                 implementation(libs.ktor.client.okhttp)
+                implementation("com.goterl:lazysodium-android:5.2.0") {
+                    exclude(group = "net.java.dev.jna", module = "jna")
+                }
+                implementation("androidx.security:security-crypto:1.1.0-alpha06")
+                implementation("net.java.dev.jna:jna:5.13.0@aar")
+
             }
         }
 

@@ -1,0 +1,106 @@
+package com.vladdev.shared.user
+
+import com.vladdev.shared.auth.dto.TransferChallengeResponse
+import com.vladdev.shared.user.dto.ChangePasswordRequest
+import com.vladdev.shared.user.dto.DeleteAccountRequest
+import com.vladdev.shared.user.dto.PresenceResponse
+import com.vladdev.shared.user.dto.UpdateEmailRequest
+import com.vladdev.shared.user.dto.UpdateNameRequest
+import com.vladdev.shared.user.dto.UpdatePrivacyRequest
+import com.vladdev.shared.user.dto.UserProfileResponse
+import com.vladdev.shared.user.dto.VerifyPasswordRequest
+import io.ktor.client.HttpClient
+import io.ktor.client.call.body
+import io.ktor.client.request.delete
+import io.ktor.client.request.get
+import io.ktor.client.request.patch
+import io.ktor.client.request.post
+import io.ktor.client.request.setBody
+import io.ktor.client.statement.HttpResponse
+import io.ktor.client.statement.bodyAsText
+import io.ktor.http.ContentType
+import io.ktor.http.HttpStatusCode
+import io.ktor.http.contentType
+import io.ktor.http.isSuccess
+import kotlinx.serialization.InternalSerializationApi
+import kotlinx.serialization.json.Json
+
+class ProfileApi(private val client: HttpClient) {
+    private val baseUrl = "http://176.124.199.31:8080"
+//    private val baseUrl = "https://6fa43409c383f2.lhr.life"
+
+    suspend inline fun <reified T> HttpResponse.safeBody(): T {
+        if (!status.isSuccess()) throw Exception("HTTP ${status.value}")
+        return body()
+    }
+    @OptIn(InternalSerializationApi::class)
+    suspend fun getProfile(): UserProfileResponse =
+        client.get("$baseUrl/profile/me").body()
+
+    @OptIn(InternalSerializationApi::class)
+    suspend fun updateName(name: String) =
+        client.patch("$baseUrl/profile/name") {
+            contentType(ContentType.Application.Json)
+            setBody(UpdateNameRequest(name))
+        }
+
+    @OptIn(InternalSerializationApi::class)
+    suspend fun updateEmail(email: String) =
+        client.patch("$baseUrl/profile/email") {
+            contentType(ContentType.Application.Json)
+            setBody(UpdateEmailRequest(email))
+        }
+
+    @OptIn(InternalSerializationApi::class)
+    suspend fun verifyPassword(password: String): Boolean =
+        client.post("$baseUrl/profile/verify-password") {
+            contentType(ContentType.Application.Json)
+            setBody(VerifyPasswordRequest(password))
+        }.status == HttpStatusCode.OK
+
+    @OptIn(InternalSerializationApi::class)
+    suspend fun changePassword(current: String, new: String) {
+        val response = client.patch("$baseUrl/profile/password") {
+            contentType(ContentType.Application.Json)
+            setBody(ChangePasswordRequest(current, new))
+        }
+        if (response.status != HttpStatusCode.OK) {
+            throw Exception(response.bodyAsText())
+        }
+    }
+
+    @OptIn(InternalSerializationApi::class)
+    suspend fun deleteAccount(password: String) {
+        val response = client.delete("$baseUrl/profile") {
+            contentType(ContentType.Application.Json)
+            setBody(DeleteAccountRequest(password))
+        }
+        // Явно бросаем исключение если не OK — иначе runCatching считает это успехом
+        if (response.status != HttpStatusCode.OK) {
+            val message = runCatching { response.bodyAsText() }.getOrDefault("Unknown error")
+            throw Exception(message)
+        }
+    }
+    @OptIn(InternalSerializationApi::class)
+    suspend fun getTransferChallenge(): TransferChallengeResponse =
+        client.get("$baseUrl/auth/transfer/challenge").body()
+
+    suspend fun saveFcmToken(token: String) {
+        client.post("$baseUrl/profile/fcm-token") {
+            contentType(ContentType.Application.Json)
+            setBody(mapOf("token" to token))
+        }
+    }
+    suspend fun getPresence(userId: String): PresenceResponse =
+        client.get("$baseUrl/profile/$userId/presence").safeBody()
+
+    suspend fun updatePrivacy(showExactLastSeen: Boolean) {
+        client.patch("$baseUrl/profile/privacy") {
+            contentType(ContentType.Application.Json)
+            setBody(UpdatePrivacyRequest(showExactLastSeen))
+        }
+    }
+    suspend fun deleteFcmToken() {
+        client.delete("$baseUrl/profile/fcm-token")
+    }
+}
