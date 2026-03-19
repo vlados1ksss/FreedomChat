@@ -41,6 +41,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -247,6 +248,49 @@ fun ProfileScreen(
                         actionIcon = painterResource(R.drawable.edit),
                         onAction = viewModel::openVerifyDialog
                     )
+                }
+
+                // Раздел приватности
+                ProfileCard {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Icon(
+                                painter = painterResource(R.drawable.visibility),
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Spacer(Modifier.width(12.dp))
+                            Column {
+                                Text(
+                                    text = "Показывать время захода",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                Text(
+                                    text = if (viewModel.showExactLastSeen)
+                                        "Собеседники видят время"
+                                    else
+                                        "Показывается «Был(-а) недавно»",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                        Switch(
+                            checked = viewModel.showExactLastSeen,
+                            onCheckedChange = { viewModel.toggleExactLastSeen() }
+                        )
+                    }
                 }
 
                 // --- Кнопка выйти ---
@@ -527,7 +571,7 @@ private fun EditableRow(
 }
 
 @Composable
-private fun ProfileDivider() {
+fun ProfileDivider() {
     HorizontalDivider(
         modifier = Modifier.padding(horizontal = 16.dp),
         color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
@@ -639,24 +683,6 @@ fun TransferBottomSheet(
                         MaterialTheme.colorScheme.onSurfaceVariant
                 )
         }
-//            // Временно под QR кодом
-//            Text(
-//                text = "QR data length: ${qrData.length}",
-//                style = MaterialTheme.typography.bodySmall
-//            )
-//            Text(
-//                text = "userId: ${userId.take(8)}...",
-//                style = MaterialTheme.typography.bodySmall
-//            )
-//            Text(
-//                text = "challenge: ${challenge.take(8)}...",
-//                style = MaterialTheme.typography.bodySmall
-//            )
-//            Text(
-//                text = "signKey: ${signKey?.take(20)}...",
-//                style = MaterialTheme.typography.bodySmall
-//            )
-
             Spacer(Modifier.height(16.dp))
 
             TextButton(onClick = onDismiss) {

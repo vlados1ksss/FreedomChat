@@ -12,7 +12,19 @@ data class IncomingStatus(val messageId: String, val userId: String, val status:
 data class IncomingDelete(val messageId: String, val deleteForAll: Boolean) : WsIncomingEvent()
 data class IncomingEdit(
     val messageId: String,
-    val senderId: String,        // ← добавить
+    val senderId: String,
     val encryptedContent: String,
     val editedAt: Long?
 ) : WsIncomingEvent()
+
+data class IncomingPin(
+    val messageId: String,
+    val unpin: Boolean
+) : WsIncomingEvent()
+data class IncomingTyping(
+    val userId: String,
+    val isTyping: Boolean
+) : WsIncomingEvent()
+// WsIncomingEvent:
+data class IncomingChatDeleted(val chatId: String) : WsIncomingEvent()
+data class IncomingHistoryCleared(val chatId: String) : WsIncomingEvent()

@@ -93,6 +93,8 @@ class ProfileViewModel(
         private set
     var transferPasswordError by mutableStateOf<String?>(null)
         private set
+    var showExactLastSeen by mutableStateOf(true)
+        private set
 
     init { loadProfile() }
 
@@ -105,6 +107,7 @@ class ProfileViewModel(
                     profile = it
                     editedName = it.name
                     editedEmail = it.email ?: ""
+                    showExactLastSeen = it.showExactLastSeen
                 }
             isLoading = false
         }
@@ -204,6 +207,15 @@ class ProfileViewModel(
         }
     }
     // endregion
+
+    fun toggleExactLastSeen() {
+        val newVal = !showExactLastSeen
+        showExactLastSeen = newVal
+        viewModelScope.launch {
+            repository.updatePrivacy(newVal)
+        }
+    }
+
     fun logout() {
         viewModelScope.launch {
             repository.logout()

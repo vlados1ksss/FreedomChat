@@ -45,7 +45,7 @@ import kotlinx.serialization.InternalSerializationApi
 fun SearchUserDialog(
     viewModel: ChatsViewModel,
     onDismiss: () -> Unit,
-    onOpenChat: (chatId: String, theirUserId:String,  name: String, status: String) -> Unit
+    onOpenChat: (chatId: String, theirUserId:String, name: String, username: String, status: String) -> Unit
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -113,8 +113,8 @@ fun SearchUserDialog(
                                     viewModel.openOrCreateChat(
                                         userId = result.user!!.userId,
                                         existingChatId = result.existingChatId
-                                    ) { chatId, theirUserId, name, status ->
-                                        onOpenChat(chatId, theirUserId, name, status)
+                                    ) { chatId, theirUserId, name, username, status ->
+                                        onOpenChat(chatId, theirUserId, name, username, status)
                                     }
                                 }
                             )

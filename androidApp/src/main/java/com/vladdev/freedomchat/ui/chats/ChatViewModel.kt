@@ -12,17 +12,26 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.vladdev.freedomchat.MainApplication
 import com.vladdev.shared.chats.ChatRepository
+import com.vladdev.shared.chats.IncomingChatDeleted
 import com.vladdev.shared.chats.IncomingDelete
 import com.vladdev.shared.chats.IncomingEdit
+import com.vladdev.shared.chats.IncomingHistoryCleared
 import com.vladdev.shared.chats.IncomingMessage
+import com.vladdev.shared.chats.IncomingPin
 import com.vladdev.shared.chats.IncomingStatus
+import com.vladdev.shared.chats.IncomingTyping
 import com.vladdev.shared.chats.dto.DecryptedMessage
 import com.vladdev.shared.chats.dto.MessageStatus
 import com.vladdev.shared.chats.dto.MessageStatusDto
 import com.vladdev.shared.crypto.E2eeManager
+import com.vladdev.shared.user.dto.PresenceResponse
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -36,9 +45,10 @@ class ChatViewModel(
     private val chatId: String,
     private val currentUserId: String?,
     private val e2ee: E2eeManager,
-    private val theirUserId: String
+    private val theirUserId: String,
+    private val interlocutorName: String,
+    private val currentUserName: String
 ) : AndroidViewModel(application) {
-
     private val app get() = getApplication<MainApplication>()
     private val _messages = MutableStateFlow<List<DecryptedMessage>>(emptyList())
     val messages = _messages.asStateFlow()
@@ -68,15 +78,60 @@ class ChatViewModel(
     var isMultiSelectMode by mutableStateOf(false)
         private set
 
+    val pinnedMessages = mutableStateListOf<DecryptedMessage>()
+    var showForwardDialog by mutableStateOf(false)
+        private set
+    var messagesToForward by mutableStateOf<List<DecryptedMessage>>(emptyList())
+        private set
+    var interlocutorPresence by mutableStateOf<String>("")
+        private set
+    var isInterlocutorTyping by mutableStateOf(false)
+        private set
+    sealed class ChatUiEvent {
+        object ChatDeleted : ChatUiEvent()
+        object HistoryCleared : ChatUiEvent()
+    }
+
+    private val _uiEvents = MutableSharedFlow<ChatUiEvent>(extraBufferCapacity = 1)
+    val uiEvents: SharedFlow<ChatUiEvent> = _uiEvents.asSharedFlow()
+    private var typingClearJob: Job? = null
+    private var presenceJob: Job? = null
+    private var typingDebounceJob: Job? = null
     init {
         app.activeChatId = chatId
         loadHistory()
         loadMuteStatus()
         connectWebSocket()
+        loadPinnedMessages()
+        startPresencePolling()
     }
 
     fun onMessageChange(text: String) {
         newMessage = text
+        typingDebounceJob?.cancel()
+        if (text.isNotBlank()) {
+            viewModelScope.launch { repository.sendTyping(chatId, true) }
+            typingDebounceJob = viewModelScope.launch {
+                delay(3_000)
+                repository.sendTyping(chatId, false)
+            }
+        } else {
+            viewModelScope.launch { repository.sendTyping(chatId, false) }
+        }
+    }
+    fun silentRefresh() {
+        viewModelScope.launch {
+            try {
+                val history = repository.getMessages(chatId, currentUserId ?: "")
+                val sorted = history.sortedByDescending { it.createdAt }
+                // Обновляем только если данные изменились — не сбрасываем scroll
+                if (sorted.map { it.id } != _messages.value.map { it.id }) {
+                    _messages.value = sorted
+                }
+            } catch (e: Exception) {
+                // тихо игнорируем
+            }
+        }
     }
     fun startReply(message: DecryptedMessage) { replyTo = message }
     fun cancelReply() { replyTo = null }
@@ -187,6 +242,7 @@ class ChatViewModel(
         }
     }
 
+
     fun onScrolledToBottom() {
         isScrollToBottomPending = false
     }
@@ -231,41 +287,61 @@ class ChatViewModel(
                         is IncomingMessage -> {
                             val msg = event.message
 
-                            val plaintext = when {
-                                msg.deletedForAll -> null
-                                msg.senderId == currentUserId -> null  // своё сообщение — текст уже есть в UI
-                                else -> e2ee.decryptMessage(chatId, msg.encryptedContent)
-                            }
-
-                            // Если это своё сообщение пришедшее эхом — обновляем только статусы,
-                            // текст берём из уже добавленного optimistic сообщения
                             if (msg.senderId == currentUserId) {
                                 _messages.update { old ->
-                                    // Ищем optimistic по префиксу вместо пустого id
                                     val existing = old.firstOrNull {
-                                        it.senderId == currentUserId && it.id.startsWith("optimistic_")
+                                        it.senderId == currentUserId &&
+                                                it.id.startsWith("optimistic_") &&
+                                                it.text == (e2ee.getOutgoingPlaintext(chatId, msg.id) ?: "") // Или сравнение с расшифрованным текстом
                                     }
                                     if (existing != null) {
                                         old.map {
-                                            if (it.id == existing.id) it.copy(id = msg.id, statuses = msg.statuses)
+                                            if (it.id == existing.id) it.copy(
+                                                id                = msg.id,
+                                                statuses          = msg.statuses,
+                                                // Берём из сервера только если не null, иначе оставляем из optimistic
+                                                forwardedFromId = msg.forwardedFromId?.takeIf { it.isNotBlank() } ?: it.forwardedFromId,
+                                                forwardedFromName = msg.forwardedFromName?.takeIf { it.isNotBlank() } ?: it.forwardedFromName
+                                            )
                                             else it
                                         }
-                                    } else {
-                                        old
-                                    }
+                                    } else if (old.none { it.id == msg.id }) {
+                                        val plaintext = e2ee.getOutgoingPlaintext(chatId, msg.id)
+                                        if (plaintext != null) {
+                                            val decrypted = DecryptedMessage(
+                                                id                = msg.id,
+                                                chatId            = msg.chatId,
+                                                senderId          = msg.senderId,
+                                                text              = plaintext,
+                                                createdAt         = msg.createdAt,
+                                                deletedForAll     = false,
+                                                statuses          = msg.statuses,
+                                                forwardedFromId   = msg.forwardedFromId,
+                                                forwardedFromName = msg.forwardedFromName
+                                            )
+                                            listOf(decrypted) + old
+                                        } else old
+                                    } else old
                                 }
                                 return@collect
                             }
 
-                            // Чужое сообщение — расшифровываем
+                            // Чужое сообщение — без изменений
+                            val plaintext = when {
+                                msg.deletedForAll -> null
+                                else -> e2ee.decryptMessage(chatId, msg.encryptedContent)
+                            }
+
                             val decrypted = DecryptedMessage(
-                                id            = msg.id,
-                                chatId        = msg.chatId,
-                                senderId      = msg.senderId,
-                                text          = plaintext,
-                                createdAt     = msg.createdAt,
-                                deletedForAll = msg.deletedForAll,
-                                statuses      = msg.statuses
+                                id                = msg.id,
+                                chatId            = msg.chatId,
+                                senderId          = msg.senderId,
+                                text              = plaintext,
+                                createdAt         = msg.createdAt,
+                                deletedForAll     = msg.deletedForAll,
+                                statuses          = msg.statuses,
+                                forwardedFromId   = msg.forwardedFromId,
+                                forwardedFromName = msg.forwardedFromName
                             )
 
                             _messages.update { old ->
@@ -279,14 +355,7 @@ class ChatViewModel(
                                 }
                             }
 
-                            currentUserId?.let {
-                                repository.sendRead(chatId, msg.id, it)
-                            }
-                            if (msg.senderId != currentUserId) {
-                                currentUserId?.let {
-                                    repository.sendRead(chatId, msg.id, it)
-                                }
-                            }
+                            currentUserId?.let { repository.sendRead(chatId, msg.id, it) }
                         }
 
                         is IncomingStatus -> {
@@ -312,11 +381,13 @@ class ChatViewModel(
                         }
 
                         is IncomingEdit -> {
+                            println("IncomingEdit received: messageId=${event.messageId}, editedAt=${event.editedAt}")
                             viewModelScope.launch {
                                 val plaintext = if (event.senderId == currentUserId) {
                                     e2ee.getOutgoingPlaintext(chatId, event.messageId)
                                 } else {
                                     e2ee.decryptMessage(chatId, event.encryptedContent)
+                                        .also { if (it == null) println("IncomingEdit: decrypt failed for ${event.messageId}") }
                                 }
 
                                 _messages.update { old ->
@@ -324,10 +395,52 @@ class ChatViewModel(
                                         if (msg.id != event.messageId) msg
                                         else msg.copy(
                                             text     = plaintext ?: msg.text,
-                                            editedAt = event.editedAt
+                                            editedAt = event.editedAt ?: System.currentTimeMillis()
                                         )
                                     }
                                 }
+                            }
+                        }
+
+                        is IncomingPin -> {
+                            if (event.unpin) {
+                                pinnedMessages.removeIf { it.id == event.messageId }
+                                _messages.update { old ->
+                                    old.map { if (it.id != event.messageId) it else it.copy(pinnedAt = null) }
+                                }
+                            } else {
+                                val msg = _messages.value.firstOrNull { it.id == event.messageId }
+                                if (msg != null && pinnedMessages.none { it.id == event.messageId }) {
+                                    pinnedMessages.add(0, msg.copy(pinnedAt = System.currentTimeMillis()))
+                                }
+                                _messages.update { old ->
+                                    old.map { if (it.id != event.messageId) it else it.copy(pinnedAt = System.currentTimeMillis()) }
+                                }
+                            }
+                        }
+                        is IncomingTyping -> {
+                            if (event.userId == theirUserId) {
+                                isInterlocutorTyping = event.isTyping
+                                // Автосброс через 5 сек если не пришёл isTyping=false
+                                typingClearJob?.cancel()
+                                if (event.isTyping) {
+                                    typingClearJob = viewModelScope.launch {
+                                        delay(5_000)
+                                        isInterlocutorTyping = false
+                                    }
+                                }
+                            }
+                        }
+                        is IncomingChatDeleted -> {
+                            if (event.chatId == chatId) {
+                                _uiEvents.tryEmit(ChatUiEvent.ChatDeleted)
+                            }
+                        }
+
+                        is IncomingHistoryCleared -> {
+                            if (event.chatId == chatId) {
+                                _messages.value = emptyList()
+                                _uiEvents.tryEmit(ChatUiEvent.HistoryCleared)
                             }
                         }
                     }
@@ -354,7 +467,105 @@ class ChatViewModel(
         }
     }
 
-    // ChatViewModel.kt
+    private fun loadPinnedMessages() {
+        viewModelScope.launch {
+            try {
+                val pinned = repository.getPinnedMessages(chatId, currentUserId ?: "")
+                pinnedMessages.clear()
+                pinnedMessages.addAll(pinned.sortedByDescending { it.pinnedAt })
+            } catch (e: Exception) {
+                Log.e("ChatVM", "Failed to load pinned", e)
+            }
+        }
+    }
+
+    fun pinMessage(message: DecryptedMessage) {
+        viewModelScope.launch {
+            try {
+                repository.pinMessage(chatId, message.id, unpin = false)
+                // Оптимистично добавляем
+                if (pinnedMessages.none { it.id == message.id }) {
+                    pinnedMessages.add(0, message.copy(pinnedAt = System.currentTimeMillis()))
+                }
+            } catch (e: Exception) {
+                error = "Не удалось закрепить сообщение"
+            }
+        }
+    }
+
+    fun unpinMessage(messageId: String) {
+        viewModelScope.launch {
+            try {
+                repository.pinMessage(chatId, messageId, unpin = true)
+                pinnedMessages.removeIf { it.id == messageId }
+            } catch (e: Exception) {
+                error = "Не удалось открепить сообщение"
+            }
+        }
+    }
+
+    fun startForward(messages: List<DecryptedMessage>) {
+        messagesToForward = messages.sortedBy { it.createdAt }
+        showForwardDialog = true
+    }
+
+    fun dismissForward() {
+        showForwardDialog = false
+        messagesToForward = emptyList()
+    }
+
+    // ChatViewModel — убираем senderName из forwardTo, берём из самого сообщения
+    fun forwardTo(targetChatId: String, theirUserId: String) {
+        val msgs = messagesToForward
+        dismissForward()
+        exitMultiSelect()
+
+        // оптимистичные сообщения
+        if (targetChatId == chatId) {
+            val optimisticList = msgs.map { original ->
+                DecryptedMessage(
+                    id                = "optimistic_fwd_${UUID.randomUUID()}",
+                    chatId            = targetChatId,
+                    senderId          = currentUserId ?: "",
+                    text              = original.text,
+                    createdAt         = System.currentTimeMillis(),
+                    deletedForAll     = false,
+                    statuses          = emptyList(),
+                    forwardedFromId   = original.senderId,
+                    forwardedFromName = resolveAuthorName(original)
+                )
+            }
+            _messages.update { listOf(*optimisticList.toTypedArray()) + it }
+        }
+
+        viewModelScope.launch {
+            try {
+                repository.forwardMessages(
+                    targetChatId = targetChatId,
+                    messages     = msgs,
+                    theirUserId  = theirUserId,
+                    nameResolver = { msg -> resolveAuthorName(msg) }  // ← передаём резолвер
+                )
+            } catch (e: Exception) {
+                if (targetChatId == chatId) {
+                    _messages.update { old ->
+                        old.filterNot { it.id.startsWith("optimistic_fwd_") }
+                    }
+                }
+                error = "Не удалось переслать сообщения"
+            }
+        }
+    }
+
+    // Определяем имя автора по senderId сообщения
+    private fun resolveAuthorName(message: DecryptedMessage): String {
+        return when (message.senderId) {
+            currentUserId -> currentUserName  // имя текущего пользователя
+            theirUserId   -> interlocutorName     // имя собеседника
+            else          -> message.forwardedFromName ?: "Неизвестно"
+        }
+    }
+
 
     override fun onCleared() {
         app.activeChatId = null
@@ -363,7 +574,9 @@ class ChatViewModel(
         viewModelScope.launch(Dispatchers.IO) {
             repository.detachFromChat(chatId)  // ← было closeChat, теперь detachFromChat
         }
-
+        presenceJob?.cancel()
+        typingClearJob?.cancel()
+        typingDebounceJob?.cancel()
         super.onCleared()
     }
     private fun loadMuteStatus() {
@@ -377,6 +590,31 @@ class ChatViewModel(
             val newMuted = !isMuted
             repository.setChatMuted(chatId, newMuted)
             isMuted = newMuted
+        }
+    }
+
+
+    private fun startPresencePolling() {
+        presenceJob = viewModelScope.launch {
+            while (true) {
+                loadPresence()
+                delay(15_000) // опрос каждые 15 сек
+            }
+        }
+    }
+
+    private suspend fun loadPresence() {
+        repository.getPresence(theirUserId)
+            .onSuccess { presence ->
+                interlocutorPresence = formatPresence(presence)
+            }
+    }
+
+    private fun formatPresence(presence: PresenceResponse): String {
+        return when {
+            presence.isOnline       -> "online"
+            presence.lastSeenAt == null -> "recently"
+            else                    -> "at:${presence.lastSeenAt}"
         }
     }
 }

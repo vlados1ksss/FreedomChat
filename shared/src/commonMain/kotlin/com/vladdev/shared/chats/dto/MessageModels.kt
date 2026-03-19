@@ -23,8 +23,11 @@ data class MessageDto(
     val statuses: List<MessageStatusDto> = emptyList(),
     val plaintextPreview: String? = null,
     val editedAt: Long? = null,
-    val replyToId: String? = null,        // ← добавить
-    val replyToPreview: String? = null    // ← добавить (зашифрованный preview для истории)
+    val replyToId: String? = null,
+    val replyToPreview: String? = null,
+    val forwardedFromId: String? = null,
+    val forwardedFromName: String? = null,
+    val pinnedAt: Long? = null
 )
 
 @InternalSerializationApi @Serializable
@@ -38,6 +41,48 @@ data class WsDeleteEvent(val type: String = "delete", val messageId: String, val
 
 @InternalSerializationApi @Serializable
 data class WsEditEvent(val type: String = "edit", val messageId: String, val senderId: String, val encryptedContent: String, val editedAt: Long?)
+
+@Serializable
+data class WsForwardEvent(
+    val type: String = "forward",
+    val targetChatId: String,
+    val messages: List<ForwardedMessagePayload>
+)
+
+@Serializable
+data class ForwardedMessagePayload(
+    val encryptedContent: String,
+    val originalSenderId: String,
+    val originalSenderName: String,
+    val originalCreatedAt: Long
+)
+
+@Serializable
+data class WsPinEvent(
+    val type: String = "pin",
+    val messageId: String,
+    val unpin: Boolean = false
+)
+
+@Serializable
+data class WsTypingEvent(
+    val type: String = "typing",
+    val chatId: String = "",
+    val userId: String = "",
+    val isTyping: Boolean
+)
+
+@Serializable
+data class WsChatDeletedEvent(
+    val type: String = "chat_deleted",
+    val chatId: String
+)
+
+@Serializable
+data class WsHistoryClearedEvent(
+    val type: String = "history_cleared",
+    val chatId: String
+)
 
 @InternalSerializationApi @Serializable
 data class SendMessageRequest(

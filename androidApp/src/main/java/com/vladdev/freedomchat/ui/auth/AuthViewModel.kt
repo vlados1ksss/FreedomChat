@@ -66,7 +66,10 @@ class AuthViewModel(
     fun navigateTo(target: AuthScreen) { screen = target }
 
 
-    fun onLoginUsernameChange(v: String) { loginUsername = v; loginError = null }
+    fun onLoginUsernameChange(v: String) {
+        loginUsername = v.replace("@", "")
+        loginError = null
+    }
     fun onLoginPasswordChange(v: String) { loginPassword = v; loginError = null }
 
     fun login() {
@@ -121,7 +124,10 @@ class AuthViewModel(
     }
 
     // Register
-    fun onRegUsernameChange(v: String) { regUsername = v; regUsernameError = null }
+    fun onRegUsernameChange(v: String) {
+        regUsername = v.replace("@", "")
+        regUsernameError = null
+    }
     fun onRegPasswordChange(v: String) { regPassword = v; regPasswordError = null }
     fun onRegPasswordConfirmChange(v: String) { regPasswordConfirm = v; regPasswordError = null }
     fun onRegEmailChange(v: String) { regEmail = v; regEmailError = null }

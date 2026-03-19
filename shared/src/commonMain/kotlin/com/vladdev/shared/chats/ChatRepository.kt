@@ -3,6 +3,7 @@ package com.vladdev.shared.chats
 import com.vladdev.shared.chats.dto.ChatDto
 import com.vladdev.shared.chats.dto.ChatRequestDto
 import com.vladdev.shared.chats.dto.DecryptedMessage
+import com.vladdev.shared.chats.dto.ForwardedMessagePayload
 import com.vladdev.shared.chats.dto.MessageDto
 import com.vladdev.shared.chats.dto.SearchUserResponse
 import com.vladdev.shared.crypto.Base64Helper
@@ -11,6 +12,7 @@ import com.vladdev.shared.crypto.E2eeManager
 import com.vladdev.shared.crypto.dto.EncryptedPayload
 import com.vladdev.shared.storage.IdentityKeyStorage
 import com.vladdev.shared.storage.UserIdStorage
+import com.vladdev.shared.user.dto.PresenceResponse
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -73,7 +75,9 @@ class ChatRepository(
                         statuses         = msg.statuses,
                         editedAt         = msg.editedAt,
                         replyToId        = msg.replyToId,
-                        replyToSenderId  = null
+                        replyToSenderId  = null,
+                        forwardedFromId   = msg.forwardedFromId,
+                        forwardedFromName = msg.forwardedFromName
                     )
                 }
 
@@ -90,7 +94,9 @@ class ChatRepository(
                             createdAt = msg.createdAt,
                             statuses  = msg.statuses,
                             replyToId       = msg.replyToId,
-                            replyToSenderId = null
+                            replyToSenderId = null,
+                            forwardedFromId   = msg.forwardedFromId,
+                            forwardedFromName = msg.forwardedFromName
                         )
                     }
                 }
@@ -173,27 +179,25 @@ class ChatRepository(
 
         val plaintext: String? = runCatching {
             if (msg.senderId == myUserId) {
+                // Сначала пробуем из хранилища
                 e2ee.getOutgoingPlaintext(chatId, msg.id)
+                // Fallback: расшифровываем как входящее (для пересланных когда plaintext не сохранён)
+                    ?: e2ee.decryptMessage(chatId, msg.encryptedContent)
             } else {
-                // Чужое — расшифровываем
                 e2ee.decryptMessage(chatId, msg.encryptedContent)
             }
         }.getOrNull()
 
-        // Возвращаем MessageDto с текстом в encryptedContent заменённым plaintext-ом
-        // Используем отдельное поле — добавляем plaintext как расширение
         return msg.copy(plaintextPreview = plaintext)
-        // encryptedContent теперь содержит plaintext для lastMessage превью
-        // (либо добавьте поле plaintext: String? = null в MessageDto)
     }
 
-    // ChatRepository.kt
     suspend fun decryptPreview(msg: MessageDto, chatId: String, myUserId: String): String? {
         if (msg.deletedForAll || msg.encryptedContent.isBlank()) return null
         return runCatching {
             if (msg.senderId == myUserId) {
                 e2ee.getOutgoingPlaintext(chatId, msg.id)
-            }  else {
+                    ?: e2ee.decryptMessage(chatId, msg.encryptedContent)
+            } else {
                 e2ee.decryptMessage(chatId, msg.encryptedContent)
             }
         }.getOrNull()
@@ -233,13 +237,63 @@ class ChatRepository(
         chatFlows.remove(chatId)
     }
 
-    // Оставляем для обратной совместимости но убираем удаление flow
-    suspend fun closeChat(chatId: String) {
-        // WS закроется сам когда ChatsViewModel уничтожится
-        // Здесь только чистим если ChatsViewModel не активен
-        if (!hasBackgroundSubscriber(chatId)) {
-            api.closeChatWebSocket(chatId)
-            chatFlows.remove(chatId)
+
+    // ChatRepository
+    suspend fun forwardMessages(
+        targetChatId: String,
+        messages: List<DecryptedMessage>,
+        theirUserId: String,
+        nameResolver: (DecryptedMessage) -> String
+    ) {
+        val theirPublicKey = api.getPublicKey(theirUserId).publicKey
+        e2ee.ensureSessionInitialized(targetChatId, theirPublicKey)
+
+        val payloads = messages.sortedBy { it.createdAt }.map { msg ->
+            val text = msg.text ?: ""
+            val encrypted = e2ee.encryptMessage(targetChatId, text, theirPublicKey)
+            Triple(text, encrypted, msg)
+        }
+
+        val sentIds = api.sendForward(
+            targetChatId,
+            payloads.map { (_, encrypted, msg) ->
+                ForwardedMessagePayload(
+                    encryptedContent    = encrypted,
+                    originalSenderId    = msg.senderId,
+                    originalSenderName  = nameResolver(msg),
+                    originalCreatedAt   = msg.createdAt
+                )
+            }
+        )
+
+        sentIds.zip(payloads).forEach { (msgId, triple) ->
+            val (text, _, _) = triple
+            e2ee.saveOutgoingPlaintext(targetChatId, msgId, text)
+        }
+    }
+
+    suspend fun pinMessage(chatId: String, messageId: String, unpin: Boolean) {
+        api.sendPinWS(chatId, messageId, unpin)
+    }
+
+    suspend fun getPinnedMessages(chatId: String, myUserId: String): List<DecryptedMessage> {
+        val raw = api.getPinnedMessages(chatId)
+        return raw.mapNotNull { msg ->
+            val text = if (msg.senderId == myUserId)
+                e2ee.getOutgoingPlaintext(chatId, msg.id)
+            else
+                e2ee.decryptMessage(chatId, msg.encryptedContent)
+            if (text == null) null
+            else DecryptedMessage(
+                id               = msg.id,
+                chatId           = msg.chatId,
+                senderId         = msg.senderId,
+                text             = text,
+                createdAt        = msg.createdAt,
+                deletedForAll    = false,
+                statuses         = emptyList(),
+                pinnedAt         = msg.pinnedAt
+            )
         }
     }
 
@@ -252,7 +306,15 @@ class ChatRepository(
     fun unregisterBackgroundSubscriber(chatId: String) {
         backgroundSubscribers.remove(chatId)
     }
+    suspend fun sendTyping(chatId: String, isTyping: Boolean) {
+        runCatching { api.sendTypingWS(chatId, isTyping) }
+    }
+    suspend fun getPresence(userId: String): Result<PresenceResponse> =
+        runCatching { api.getPresence(userId) }
 
-    fun hasBackgroundSubscriber(chatId: String): Boolean =
-        backgroundSubscribers.contains(chatId)
+    suspend fun deleteChat(chatId: String): Result<Unit> =
+        runCatching { api.deleteChat(chatId) }
+
+    suspend fun clearHistory(chatId: String): Result<Unit> =
+        runCatching { api.clearHistory(chatId) }
 }

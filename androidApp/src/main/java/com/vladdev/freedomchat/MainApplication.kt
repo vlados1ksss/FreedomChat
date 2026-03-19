@@ -37,9 +37,10 @@ class MainApplication : Application() {
     lateinit var crypto: CryptoManager                      private set
     lateinit var e2ee: E2eeManager                          private set
     lateinit var authRepository: AuthRepository             private set
+    lateinit var profileApi: ProfileApi            private set
+
     lateinit var notificationHelper: NotificationHelper
         private set
-    // В Application или как extension
 
     var httpClient: HttpClient? = null
     var chatRepository: ChatRepository? = null

@@ -14,8 +14,8 @@ android {
         applicationId = "com.vladdev.freedomchat"
         minSdk = 29
         targetSdk = 36
-        versionCode = 9
-        versionName = "beta-2.0"
+        versionCode = 12
+        versionName = "beta-5.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -40,8 +40,7 @@ android {
         resources {
             excludes += "/META-INF/AL2.0"
             excludes += "/META-INF/LGPL2.1"
-            // Если возникнут конфликты с JNA, можно добавить:
-            pickFirsts += "lib/**/libjnidispatch.so"
+            //pickFirsts += "lib/**/libjnidispatch.so"
         }
     }
 }
@@ -56,6 +55,7 @@ dependencies {
     implementation(libs.androidx.compose.ui.tooling.preview)
     implementation(libs.androidx.compose.material3)
     implementation(libs.androidx.datastore.core)
+    implementation(libs.androidx.compose.animation.core)
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
@@ -81,5 +81,4 @@ dependencies {
     implementation("com.google.firebase:firebase-analytics-ktx")
     implementation("androidx.fragment:fragment-ktx:1.6.2")
     implementation("androidx.datastore:datastore-preferences:1.1.7")
-
 }

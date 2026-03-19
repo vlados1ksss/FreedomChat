@@ -2,6 +2,7 @@ package com.vladdev.shared.user
 
 import com.vladdev.shared.auth.AuthRepository
 import com.vladdev.shared.auth.dto.TransferChallengeResponse
+import com.vladdev.shared.user.dto.PresenceResponse
 import com.vladdev.shared.user.dto.UserProfileResponse
 import kotlinx.serialization.InternalSerializationApi
 
@@ -34,4 +35,10 @@ class ProfileRepository(
 
     suspend fun saveFcmToken(token: String) = runCatching { api.saveFcmToken(token) }
     suspend fun deleteFcmToken() = runCatching { api.deleteFcmToken() }
+
+    suspend fun getPresence(userId: String): Result<PresenceResponse> =
+        runCatching { api.getPresence(userId) }
+
+    suspend fun updatePrivacy(showExactLastSeen: Boolean): Result<Unit> =
+        runCatching { api.updatePrivacy(showExactLastSeen) }
 }

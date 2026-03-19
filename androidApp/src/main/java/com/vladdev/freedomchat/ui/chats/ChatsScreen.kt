@@ -74,6 +74,7 @@ import androidx.compose.ui.unit.sp
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.preferencesDataStore
 import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
 import com.vladdev.freedomchat.R
@@ -93,18 +94,22 @@ import java.util.prefs.Preferences
 )
 @Composable
 fun ChatsScreen(
-    repository: ChatRepository,
+    viewModel: ChatsViewModel,
     currentUserId: String?,
-    onOpenChat: (chatId: String, theirUserId: String, name: String, status: String) -> Unit,
+    onOpenChat: (chatId: String, theirUserId: String, name: String, username: String, status: String) -> Unit,
     onOpenProfile: () -> Unit
 ) {
     val context = LocalContext.current
-    val viewModel = remember {
-        ChatsViewModel(
-            repository    = repository,
-            dataStore     = context.applicationContext.chatsDataStore,
-            currentUserId = currentUserId
-        )
+// В ChatsScreen добавь:
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                viewModel.silentRefresh()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
     DisposableEffect(Unit) {
@@ -235,6 +240,7 @@ fun ChatsScreen(
                                         chat.chatId,
                                         theirParticipant.userId,
                                         theirParticipant.name,
+                                        theirParticipant.username,
                                         theirParticipant.status
                                     )
                                 },
@@ -274,10 +280,10 @@ fun ChatsScreen(
                     showSearch = false
                     viewModel.clearSearch()
                 },
-                onOpenChat = { chatId, theirUserId, name, status ->
+                onOpenChat = { chatId, theirUserId, name, username, status ->
                     showSearch = false
                     viewModel.clearSearch()
-                    onOpenChat(chatId, theirUserId, name, status)
+                    onOpenChat(chatId, theirUserId, name, username, status)
                 }
             )
         }

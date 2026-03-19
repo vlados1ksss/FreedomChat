@@ -37,7 +37,6 @@ import com.vladdev.freedomchat.R
 @Composable
 fun UserAvatar(name: String, size: Dp) {
     val initials = name.take(2).uppercase()
-
     val avatarColor = MaterialTheme.colorScheme.primaryContainer
 
     Box(
@@ -100,7 +99,7 @@ fun StatusIcon(status: String, size: Dp = 16.dp) {
             modifier = Modifier.size(size)
         )
         "admin" -> Icon(
-            painterResource(R.drawable.verified), null,
+            painterResource(R.drawable.admin), null,
             tint = MaterialTheme.colorScheme.error,
             modifier = Modifier.size(size)
         )

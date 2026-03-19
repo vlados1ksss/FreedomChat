@@ -4,19 +4,26 @@ import com.vladdev.shared.auth.dto.PublicKeyResponse
 import com.vladdev.shared.chats.dto.ChatDto
 import com.vladdev.shared.chats.dto.ChatIdResponse
 import com.vladdev.shared.chats.dto.ChatRequestDto
+import com.vladdev.shared.chats.dto.ForwardedMessagePayload
 import com.vladdev.shared.chats.dto.MessageDto
 import com.vladdev.shared.chats.dto.MessageStatus
 import com.vladdev.shared.chats.dto.RequestIdResponse
 import com.vladdev.shared.chats.dto.SearchUserResponse
 import com.vladdev.shared.chats.dto.WsDeleteEvent
 import com.vladdev.shared.chats.dto.WsEditEvent
+import com.vladdev.shared.chats.dto.WsChatDeletedEvent
+import com.vladdev.shared.chats.dto.WsHistoryClearedEvent
 import com.vladdev.shared.chats.dto.WsMessageEvent
+import com.vladdev.shared.chats.dto.WsPinEvent
 import com.vladdev.shared.chats.dto.WsStatusEvent
+import com.vladdev.shared.chats.dto.WsTypingEvent
 import com.vladdev.shared.storage.TokenStorage
+import com.vladdev.shared.user.dto.PresenceResponse
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
 import io.ktor.client.plugins.websocket.DefaultClientWebSocketSession
 import io.ktor.client.plugins.websocket.webSocketSession
+import io.ktor.client.request.delete
 import io.ktor.client.request.get
 import io.ktor.client.request.parameter
 import io.ktor.client.request.post
@@ -48,7 +55,6 @@ class ChatApi(private val client: HttpClient, private val tokenStorage: TokenSto
         encodeDefaults = true
         ignoreUnknownKeys = true
     }
-//    private val baseUrl = "http://192.168.31.191:8080"
     private val baseWsUrl = "ws://176.124.199.31:8080"
     private val baseUrl = "http://176.124.199.31:8080"
 
@@ -87,8 +93,6 @@ class ChatApi(private val client: HttpClient, private val tokenStorage: TokenSto
     suspend fun getPublicKey(userId: String): PublicKeyResponse =
         client.get("$baseUrl/keys/$userId").safeBody()
 
-    // ChatApi.kt
-
     suspend fun openChatWebSocket(
         chatId: String,
         scope: CoroutineScope,
@@ -119,6 +123,7 @@ class ChatApi(private val client: HttpClient, private val tokenStorage: TokenSto
                 for (frame in session.incoming) {
                     if (frame is Frame.Text) {
                         val text = frame.readText()
+                        println("WS FRAME received for $chatId: $text")
                         val type = Json.parseToJsonElement(text)
                             .jsonObject["type"]?.jsonPrimitive?.content
 
@@ -143,8 +148,20 @@ class ChatApi(private val client: HttpClient, private val tokenStorage: TokenSto
                             }
                             "edit" -> {
                                 val e = Json.decodeFromString<WsEditEvent>(text)
-                                if (e.messageId.isNotEmpty()) resolvePendingMessage(chatId, e.messageId)
                                 IncomingEdit(e.messageId, e.senderId, e.encryptedContent, e.editedAt)
+                            }
+                            "typing" -> {
+                                println("Typing WS event received: $text")
+                                val e = Json.decodeFromString<WsTypingEvent>(text)
+                                IncomingTyping(e.userId, e.isTyping)
+                            }
+                            "chat_deleted"     -> {
+                                val e = Json.decodeFromString<WsChatDeletedEvent>(text)
+                                IncomingChatDeleted(e.chatId)
+                            }
+                            "history_cleared"  -> {
+                                val e = Json.decodeFromString<WsHistoryClearedEvent>(text)
+                                IncomingHistoryCleared(e.chatId)
                             }
                             else -> continue
                         }
@@ -152,7 +169,7 @@ class ChatApi(private val client: HttpClient, private val tokenStorage: TokenSto
                     }
                 }
             } catch (e: Exception) {
-                println("WS frame loop error for $chatId: ${e.message}")
+                println("WS frame loop DIED for $chatId: ${e.message}")
                 wsConnections.remove(chatId)
             }
         }
@@ -224,5 +241,43 @@ class ChatApi(private val client: HttpClient, private val tokenStorage: TokenSto
         client.get("$baseUrl/chats/$chatId/mute")
             .body<Map<String, Boolean>>()["muted"] ?: false
 
-    fun hasActiveConnection(chatId: String): Boolean = wsConnections.containsKey(chatId)
+    suspend fun sendForward(
+        targetChatId: String,
+        payloads: List<ForwardedMessagePayload>
+    ): List<String> {
+        return client.post("$baseUrl/chats/$targetChatId/forward") {
+            contentType(ContentType.Application.Json)
+            setBody(payloads)
+        }.body<List<String>>()
+    }
+
+    suspend fun sendPinWS(chatId: String, messageId: String, unpin: Boolean) {
+        val session = wsConnections[chatId] ?: throw IllegalStateException("WS not open")
+        session.send(Frame.Text(AppJson.encodeToString(
+            WsPinEvent(
+                messageId = messageId,
+                unpin = unpin
+            )
+        )))
+    }
+
+    suspend fun getPinnedMessages(chatId: String): List<MessageDto> =
+        client.get("$baseUrl/chats/$chatId/pinned").safeBody()
+
+    suspend fun sendTypingWS(chatId: String, isTyping: Boolean) {
+        val session = wsConnections[chatId] ?: return
+        session.send(Frame.Text(AppJson.encodeToString(
+            WsTypingEvent(isTyping = isTyping)
+        )))
+    }
+    suspend fun getPresence(userId: String): PresenceResponse =
+        client.get("$baseUrl/profile/$userId/presence").safeBody()
+
+    suspend fun deleteChat(chatId: String) {
+        client.delete("$baseUrl/chats/$chatId")
+    }
+
+    suspend fun clearHistory(chatId: String) {
+        client.delete("$baseUrl/chats/$chatId/history")
+    }
 }

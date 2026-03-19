@@ -90,7 +90,17 @@ class E2eeManager(
         it.printStackTrace()
         null
     }
+    // E2eeManager
+    suspend fun ensureSessionInitialized(chatId: String, theirPublicKeyHex: String) {
+        val existing = ratchetStorage.loadState(chatId)
+        if (existing != null) return
 
-    suspend fun resetSession(chatId: String) = ratchetStorage.clearState(chatId)
+        val myPrivKey    = identityStorage.getPrivateKey() ?: error("No identity private key")
+        val myPubKey     = identityStorage.getPublicKey()  ?: error("No identity public key")
+        val sharedSecret = crypto.computeSharedSecret(myPrivKey, theirPublicKeyHex)
+        val newState     = crypto.initRatchet(sharedSecret, myPubKey, theirPublicKeyHex)
+        ratchetStorage.saveState(chatId, newState)
+    }
+
     suspend fun resetAllSessions() = ratchetStorage.clearAll()
 }

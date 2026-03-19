@@ -129,8 +129,9 @@ fun LoginStep(vm: AuthViewModel) {
         AuthTextField(
             value = vm.loginUsername,
             onValueChange = vm::onLoginUsernameChange,
-            label = "Имя пользователя",
-            error = if (vm.loginError != null) vm.loginError else null,
+            label = "Имя пользователя (username)",
+            prefixText = "@",
+            error = vm.loginError,
             modifier = Modifier.focusRequester(focusRequester)
         )
 
@@ -171,7 +172,8 @@ fun Reg1Step(vm: AuthViewModel) {
         AuthTextField(
             value = vm.regUsername,
             onValueChange = vm::onRegUsernameChange,
-            label = "Имя пользователя (@username)",
+            label = "Имя пользователя (username)",
+            prefixText = "@",
             error = vm.regUsernameError,
             modifier = Modifier.focusRequester(focusRequester)
         )

@@ -104,13 +104,19 @@ fun AuthTextField(
     isPassword: Boolean = false,
     error: String? = null,
     placeholder: String = "",
-    keyboardType: KeyboardType = KeyboardType.Text
+    keyboardType: KeyboardType = KeyboardType.Text,
+    prefixText: String? = null
 ) {
     OutlinedTextField(
         value = value,
         onValueChange = onValueChange,
         label = { Text(label) },
-        placeholder = if (placeholder.isNotEmpty()) {{ Text(placeholder, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)) }} else null,
+        prefix = prefixText?.let {
+            { Text(it, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+        },
+        placeholder = if (placeholder.isNotEmpty()) {
+            { Text(placeholder, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)) }
+        } else null,
         singleLine = true,
         isError = error != null,
         supportingText = error?.let { { Text(it, color = MaterialTheme.colorScheme.error) } },

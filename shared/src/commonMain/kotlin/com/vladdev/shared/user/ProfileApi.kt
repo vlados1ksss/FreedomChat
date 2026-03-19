@@ -3,8 +3,10 @@ package com.vladdev.shared.user
 import com.vladdev.shared.auth.dto.TransferChallengeResponse
 import com.vladdev.shared.user.dto.ChangePasswordRequest
 import com.vladdev.shared.user.dto.DeleteAccountRequest
+import com.vladdev.shared.user.dto.PresenceResponse
 import com.vladdev.shared.user.dto.UpdateEmailRequest
 import com.vladdev.shared.user.dto.UpdateNameRequest
+import com.vladdev.shared.user.dto.UpdatePrivacyRequest
 import com.vladdev.shared.user.dto.UserProfileResponse
 import com.vladdev.shared.user.dto.VerifyPasswordRequest
 import io.ktor.client.HttpClient
@@ -14,16 +16,23 @@ import io.ktor.client.request.get
 import io.ktor.client.request.patch
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
+import io.ktor.client.statement.HttpResponse
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
+import io.ktor.http.isSuccess
 import kotlinx.serialization.InternalSerializationApi
 import kotlinx.serialization.json.Json
 
 class ProfileApi(private val client: HttpClient) {
     private val baseUrl = "http://176.124.199.31:8080"
 //    private val baseUrl = "https://6fa43409c383f2.lhr.life"
+
+    suspend inline fun <reified T> HttpResponse.safeBody(): T {
+        if (!status.isSuccess()) throw Exception("HTTP ${status.value}")
+        return body()
+    }
     @OptIn(InternalSerializationApi::class)
     suspend fun getProfile(): UserProfileResponse =
         client.get("$baseUrl/profile/me").body()
@@ -82,7 +91,15 @@ class ProfileApi(private val client: HttpClient) {
             setBody(mapOf("token" to token))
         }
     }
+    suspend fun getPresence(userId: String): PresenceResponse =
+        client.get("$baseUrl/profile/$userId/presence").safeBody()
 
+    suspend fun updatePrivacy(showExactLastSeen: Boolean) {
+        client.patch("$baseUrl/profile/privacy") {
+            contentType(ContentType.Application.Json)
+            setBody(UpdatePrivacyRequest(showExactLastSeen))
+        }
+    }
     suspend fun deleteFcmToken() {
         client.delete("$baseUrl/profile/fcm-token")
     }

@@ -13,7 +13,9 @@ class ChatViewModelFactory(
     private val e2ee: E2eeManager,
     private val chatId: String,
     private val currentUserId: String?,
-    private val theirUserId: String
+    private val theirUserId: String,
+    private val interlocutorName: String,
+    private val currentUserName: String
 ) : ViewModelProvider.Factory {
     override fun <T : ViewModel> create(modelClass: Class<T>): T =
         ChatViewModel(
@@ -22,6 +24,8 @@ class ChatViewModelFactory(
             chatId        = chatId,
             currentUserId = currentUserId,
             e2ee          = e2ee,
-            theirUserId   = theirUserId
+            theirUserId   = theirUserId,
+            interlocutorName  = interlocutorName,
+            currentUserName = currentUserName
         ) as T
 }

@@ -40,6 +40,7 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialExpressiveTheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -99,7 +100,10 @@ fun MessageItem(
     onEdit: (DecryptedMessage) -> Unit,
     onSelect: (DecryptedMessage) -> Unit,
     onEnterMultiSelect: (DecryptedMessage) -> Unit,
-    onScrollToMessage: (String) -> Unit
+    onScrollToMessage: (String) -> Unit,
+    onForward: (DecryptedMessage) -> Unit,
+    onPin: (DecryptedMessage) -> Unit,
+    onForwardedAuthorClick: (userId: String?, name: String) -> Unit,
 ) {
     val displayText = message.displayText ?: return
     val isOwn = message.senderId == currentUserId
@@ -129,6 +133,11 @@ fun MessageItem(
         MaterialTheme.colorScheme.primaryContainer
     else
         MaterialTheme.colorScheme.primary
+
+    val replyColor = if (isOwn)
+        MaterialTheme.colorScheme.primaryContainer
+    else
+        MaterialTheme.colorScheme.secondary
 
     val bubbleColor = if (isOwn)
         MaterialTheme.colorScheme.primary
@@ -263,14 +272,14 @@ fun MessageItem(
                                     modifier = Modifier
                                         .width(3.dp)
                                         .height(40.dp)
-                                        .background(MaterialTheme.colorScheme.primaryContainer, RoundedCornerShape(2.dp))
+                                        .background(color = replyColor, RoundedCornerShape(2.dp))
                                 )
                                 Spacer(Modifier.width(8.dp))
                                 Column {
                                     Text(
                                         text = replyAuthorName,
                                         style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.primaryContainer,
+                                        color = replyColor,
                                         fontWeight = FontWeight.SemiBold
                                     )
                                     Text(
@@ -298,7 +307,36 @@ fun MessageItem(
                         }
                     }
 
-                    // Основной текст — НЕ курсив
+                    message.forwardedFromName?.let { name ->
+                        val isForwardedFromMe = message.forwardedFromId == currentUserId
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(bottom = 4.dp)
+                                .then(
+                                    if (!isForwardedFromMe)
+                                        Modifier.clickable { onForwardedAuthorClick(message.forwardedFromId, name) }
+                                    else
+                                        Modifier
+                                ),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                painterResource(R.drawable.forward),
+                                contentDescription = null,
+                                modifier = Modifier.size(12.dp),
+                                tint = textColor.copy(alpha = 0.6f)
+                            )
+                            Spacer(Modifier.width(4.dp))
+                            Text(
+                                text      = "Переслано от $name",
+                                style     = MaterialTheme.typography.labelSmall,
+                                color     = textColor.copy(alpha = 0.6f),
+                                fontStyle = FontStyle.Italic
+                            )
+                        }
+                    }
+
                     Text(
                         text = displayText,
                         color = textColor,
@@ -312,6 +350,14 @@ fun MessageItem(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         // "изм." курсивом
+                        if (message.pinnedAt != null){
+                            Icon(
+                                painter = painterResource(R.drawable.ic_pin),
+                                contentDescription = null,
+                                modifier = Modifier.size(14.dp),
+                                tint = textColor.copy(alpha = 0.7f)
+                            )
+                        }
                         if (message.editedAt != null) {
                             Text(
                                 text = "изм. ",
@@ -364,11 +410,13 @@ fun MessageItem(
                 onEdit = { showMenu = false; onEdit(message) },
                 onSelect = {
                     showMenu = false
-                    onEnterMultiSelect(message)   // выбираем сообщение после закрытия меню
+                    onEnterMultiSelect(message)
                 },
                 onDeleteForMe = { showMenu = false; onDelete(message.id, false) },
                 onDeleteForAll = { showMenu = false; onDelete(message.id, true) },
-                onDismiss = { showMenu = false }
+                onDismiss = { showMenu = false },
+                onForward = { showMenu = false; onForward(message) },
+                onPin = { showMenu = false; onPin(message) },
             )
         }
     }
@@ -380,6 +428,8 @@ fun MessageContextMenu(
     onReply: () -> Unit,
     onEdit: () -> Unit,
     onSelect: () -> Unit,
+    onForward: () -> Unit,
+    onPin: () -> Unit,
     onDeleteForMe: () -> Unit,
     onDeleteForAll: () -> Unit,
     onDismiss: () -> Unit
@@ -387,10 +437,8 @@ fun MessageContextMenu(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .clickable(
-                indication = null,
-                interactionSource = remember { MutableInteractionSource() }
-            ) { onDismiss() }
+            .clickable(indication = null,
+                interactionSource = remember { MutableInteractionSource() }) { onDismiss() }
     ) {
         Surface(
             shape = RoundedCornerShape(16.dp),
@@ -402,17 +450,15 @@ fun MessageContextMenu(
                 .width(220.dp)
         ) {
             Column(modifier = Modifier.padding(vertical = 8.dp)) {
-                MenuRow(icon = R.drawable.reply,      label = "Ответить",       onClick = onReply)
-                if (isOwn) {
-                    MenuRow(icon = R.drawable.edit,   label = "Изменить",       onClick = onEdit)
-                }
-                MenuRow(icon = R.drawable.select,     label = "Выбрать",        onClick = onSelect)
-                MenuRow(icon = R.drawable.delete,     label = "Удалить у себя", onClick = onDeleteForMe)
-                MenuRow(icon = R.drawable.delete_forever, label = "Удалить у всех", onClick = onDeleteForAll)
+                MenuRow(R.drawable.reply,          "Ответить",       onReply)
+                MenuRow(R.drawable.forward,        "Переслать",      onForward)
+                if (isOwn) MenuRow(R.drawable.edit, "Изменить",      onEdit)
+                MenuRow(R.drawable.ic_pin,       "Закрепить",      onPin)
+                MenuRow(R.drawable.select,         "Выбрать",        onSelect)
+                MenuRow(R.drawable.delete,         "Удалить у себя", onDeleteForMe)
+                MenuRow(R.drawable.delete_forever, "Удалить у всех", onDeleteForAll)
                 MenuRow(
-                    icon = R.drawable.close,
-                    label = "Скрыть",
-                    onClick = onDismiss,
+                    R.drawable.close, "Скрыть", onDismiss,
                     tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
                 )
             }

@@ -21,14 +21,20 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
+import com.vladdev.shared.chats.IncomingChatDeleted
 import com.vladdev.shared.chats.IncomingDelete
 import com.vladdev.shared.chats.IncomingEdit
+import com.vladdev.shared.chats.IncomingHistoryCleared
 import com.vladdev.shared.chats.IncomingMessage
+import com.vladdev.shared.chats.IncomingPin
 import com.vladdev.shared.chats.IncomingStatus
+import com.vladdev.shared.chats.IncomingTyping
 import com.vladdev.shared.chats.WsIncomingEvent
 import com.vladdev.shared.chats.dto.MessageStatus
 import com.vladdev.shared.chats.dto.MessageStatusDto
 import com.vladdev.shared.crypto.E2eeManager
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 @OptIn(InternalSerializationApi::class)
 class ChatsViewModel(private val repository: ChatRepository,private val dataStore: DataStore<Preferences>, private val currentUserId: String?    ) : ViewModel() {
@@ -68,11 +74,11 @@ class ChatsViewModel(private val repository: ChatRepository,private val dataStor
 
     private val chatSubscriptions = mutableMapOf<String, Job>()
 
-
+    private val chatsMutex = Mutex()
     companion object {
         private val PINNED_CHATS_KEY = stringPreferencesKey("pinned_chats")
     }
-
+    private var silentRefreshJob: Job? = null
     init {
         viewModelScope.launch {
             loadPinnedChats()
@@ -80,29 +86,48 @@ class ChatsViewModel(private val repository: ChatRepository,private val dataStor
         }
     }
 
-    fun refresh() {
-        viewModelScope.launch {
-            isLoading = true
-
+    fun silentRefresh() {
+        silentRefreshJob?.cancel()
+        silentRefreshJob = viewModelScope.launch {
             repository.loadChats()
                 .onSuccess { loaded ->
-                    chats = loaded
-                    // Подписываемся на новые чаты после загрузки
+                    chatsMutex.withLock { chats = loaded }
                     subscribeToNewChats(loaded)
                 }
-                .onFailure { error = it.message }
+                .onFailure { }
 
             repository.loadRequests()
                 .onSuccess { incomingRequests = it }
-                .onFailure { error = it.message }
+                .onFailure { }
 
-            // Загружаем mute статусы
             val muted = mutableSetOf<String>()
             chats.forEach { chat ->
                 if (repository.getChatMuted(chat.chatId)) muted.add(chat.chatId)
             }
             mutedChatIds = muted
+        }
+    }
 
+    fun refresh() {
+        viewModelScope.launch {
+            isLoading = true
+            silentRefreshJob?.cancel()
+            silentRefreshJob = null
+            // inline чтобы дождаться завершения
+            repository.loadChats()
+                .onSuccess { loaded ->
+                    chatsMutex.withLock { chats = loaded }
+                    subscribeToNewChats(loaded)
+                }
+                .onFailure { error = it.message }
+            repository.loadRequests()
+                .onSuccess { incomingRequests = it }
+                .onFailure { error = it.message }
+            val muted = mutableSetOf<String>()
+            chats.forEach { chat ->
+                if (repository.getChatMuted(chat.chatId)) muted.add(chat.chatId)
+            }
+            mutedChatIds = muted
             isLoading = false
         }
     }
@@ -120,6 +145,7 @@ class ChatsViewModel(private val repository: ChatRepository,private val dataStor
                     println("Background WS error for ${chat.chatId}: ${e.message}")
                 }
                 repository.eventsFlow(chat.chatId).collect { event ->
+                    println("ChatsVM got event for ${chat.chatId}: $event")  // ← добавь
                     handleChatEvent(chat.chatId, event)
                 }
             }
@@ -137,49 +163,51 @@ class ChatsViewModel(private val repository: ChatRepository,private val dataStor
 
                 viewModelScope.launch {
                     val plaintext = repository.decryptPreview(msg, chatId, currentUserId ?: "")
-                    chats = chats.map { chat ->
-                        if (chat.chatId != chatId) return@map chat
-
-                        // ПРОВЕРКА: Если это сообщение уже было последним, не инкрементируем счетчик
-                        val isNewMessage = chat.lastMessage?.id != msg.id
-                        val shouldIncrement = !isOwn && activeChatId != chatId && isNewMessage
-
-                        chat.copy(
-                            lastMessage = msg.copy(plaintextPreview = plaintext),
-                            unreadCount = if (shouldIncrement) chat.unreadCount + 1 else chat.unreadCount
-                        )
+                    chatsMutex.withLock {
+                        chats = chats.map { chat ->
+                            if (chat.chatId != chatId) return@map chat
+                            val isNewMessage = chat.lastMessage?.id != msg.id
+                            val shouldIncrement = !isOwn && activeChatId != chatId && isNewMessage
+                            chat.copy(
+                                lastMessage = msg.copy(plaintextPreview = plaintext),
+                                unreadCount = if (shouldIncrement) chat.unreadCount + 1 else chat.unreadCount
+                            )
+                        }
                     }
                 }
             }
 
             is IncomingStatus -> {
-                chats = chats.map { chat ->
-                    if (chat.chatId != chatId) return@map chat
-
-                    // Обновляем статусы у lastMessage
-                    val updatedLast = chat.lastMessage?.let { last ->
-                        val newStatuses = last.statuses
-                            .filter { it.userId != event.userId } +
-                                MessageStatusDto(event.messageId, event.userId, event.status)
-                        last.copy(statuses = newStatuses)
+                viewModelScope.launch {
+                    chatsMutex.withLock {
+                        chats = chats.map { chat ->
+                            if (chat.chatId != chatId) return@map chat
+                            val updatedLast = chat.lastMessage?.let { last ->
+                                val newStatuses = last.statuses
+                                    .filter { it.userId != event.userId } +
+                                        MessageStatusDto(event.messageId, event.userId, event.status)
+                                last.copy(statuses = newStatuses)
+                            }
+                            val newUnread = if (
+                                event.status == MessageStatus.READ &&
+                                event.userId == currentUserId
+                            ) 0 else chat.unreadCount
+                            chat.copy(lastMessage = updatedLast, unreadCount = newUnread)
+                        }
                     }
-
-                    // Если READ пришёл от текущего пользователя — обнуляем счётчик
-                    val newUnread = if (
-                        event.status == MessageStatus.READ &&
-                        event.userId == currentUserId
-                    ) 0 else chat.unreadCount
-
-                    chat.copy(lastMessage = updatedLast, unreadCount = newUnread)
                 }
             }
 
             is IncomingDelete -> {
-                chats = chats.map { chat ->
-                    if (chat.chatId != chatId) return@map chat
-                    if (chat.lastMessage?.id == event.messageId) {
-                        chat.copy(lastMessage = null)
-                    } else chat
+                viewModelScope.launch {
+                    chatsMutex.withLock {
+                        chats = chats.map { chat ->
+                            if (chat.chatId != chatId) return@map chat
+                            if (chat.lastMessage?.id == event.messageId)
+                                chat.copy(lastMessage = null)
+                            else chat
+                        }
+                    }
                 }
             }
             is IncomingEdit -> {
@@ -189,17 +217,42 @@ class ChatsViewModel(private val repository: ChatRepository,private val dataStor
                         messageId        = event.messageId,
                         encryptedContent = event.encryptedContent,
                         myUserId         = currentUserId ?: "",
-                        senderId         = event.senderId    // ← передаём
+                        senderId         = event.senderId
                     )
-                    chats = chats.map { chat ->
-                        if (chat.chatId != chatId) return@map chat
-                        if (chat.lastMessage?.id != event.messageId) return@map chat
-                        chat.copy(
-                            lastMessage = chat.lastMessage!!.copy(
-                                plaintextPreview = plaintext,
-                                editedAt = event.editedAt
+                    chatsMutex.withLock {
+                        chats = chats.map { chat ->
+                            if (chat.chatId != chatId) return@map chat
+                            if (chat.lastMessage?.id != event.messageId) return@map chat
+                            chat.copy(
+                                lastMessage = chat.lastMessage!!.copy(
+                                    plaintextPreview = plaintext,
+                                    editedAt = event.editedAt
+                                )
                             )
-                        )
+                        }
+                    }
+                }
+            }
+            is IncomingPin -> {
+            }
+            is IncomingTyping -> {
+            }
+            is IncomingChatDeleted -> {
+                viewModelScope.launch {
+                    chatsMutex.withLock {
+                        chats = chats.filterNot { it.chatId == event.chatId }
+                    }
+                }
+            }
+
+            is IncomingHistoryCleared -> {
+                viewModelScope.launch {
+                    chatsMutex.withLock {
+                        chats = chats.map { chat ->
+                            if (chat.chatId == event.chatId)
+                                chat.copy(lastMessage = null, unreadCount = 0)
+                            else chat
+                        }
                     }
                 }
             }
@@ -233,19 +286,20 @@ class ChatsViewModel(private val repository: ChatRepository,private val dataStor
     fun openOrCreateChat(
         userId: String,
         existingChatId: String?,
-        onReady: (chatId: String, theirUserId: String, name: String, status: String) -> Unit
+        onReady: (chatId: String, theirUserId: String, name: String, username: String, status: String) -> Unit
     ) {
         viewModelScope.launch {
-            val name   = searchResult?.user?.name ?: searchResult?.user?.username ?: ""
-            val status = searchResult?.user?.status ?: "standard"
+            val name     = searchResult?.user?.name ?: searchResult?.user?.username ?: ""
+            val username = searchResult?.user?.username ?: ""   // ← добавить
+            val status   = searchResult?.user?.status ?: "standard"
 
             if (existingChatId != null) {
-                onReady(existingChatId, userId, name, status)
+                onReady(existingChatId, userId, name, username, status)
             } else {
                 repository.createDirectChat(userId)
                     .onSuccess { chatId ->
                         refresh()
-                        onReady(chatId, userId, name, status)
+                        onReady(chatId, userId, name, username, status)
                     }
                     .onFailure { error = it.message }
             }

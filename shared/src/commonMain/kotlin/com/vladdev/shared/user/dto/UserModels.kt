@@ -10,9 +10,21 @@ data class UserProfileResponse(
     val name: String,
     val email: String? = null,
     val status: String,
-    val createdAt: Long
+    val createdAt: Long,
+    val showExactLastSeen: Boolean = true
+)
+@Serializable
+data class PresenceResponse(
+    val userId: String,
+    val isOnline: Boolean,
+    val lastSeenAt: Long?,
+    val showExact: Boolean
 )
 
+@Serializable
+data class UpdatePrivacyRequest(
+    val showExactLastSeen: Boolean
+)
 @InternalSerializationApi @Serializable
 data class UpdateNameRequest(val name: String)
 
