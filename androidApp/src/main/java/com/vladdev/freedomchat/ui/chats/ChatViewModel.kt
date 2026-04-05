@@ -2,15 +2,31 @@ package com.vladdev.freedomchat.ui.chats
 
 import android.app.Application
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.media.MediaMetadataRetriever
+import android.media.ThumbnailUtils
+import android.net.Uri
+import android.os.Build
+import android.provider.MediaStore
+import android.provider.OpenableColumns
 import android.util.Log
+import android.util.Size
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.vladdev.freedomchat.MAX_PHOTOS
+import com.vladdev.freedomchat.MAX_VIDEOS
 import com.vladdev.freedomchat.MainApplication
+import com.vladdev.freedomchat.MediaPendingItem
+import com.vladdev.freedomchat.PHOTO_MAX_BYTES
+import com.vladdev.freedomchat.PendingMediaType
+import com.vladdev.freedomchat.VIDEO_MAX_BYTES
 import com.vladdev.shared.chats.ChatRepository
 import com.vladdev.shared.chats.IncomingChatDeleted
 import com.vladdev.shared.chats.IncomingDelete
@@ -18,11 +34,16 @@ import com.vladdev.shared.chats.IncomingEdit
 import com.vladdev.shared.chats.IncomingHistoryCleared
 import com.vladdev.shared.chats.IncomingMessage
 import com.vladdev.shared.chats.IncomingPin
+import com.vladdev.shared.chats.IncomingReaction
 import com.vladdev.shared.chats.IncomingStatus
 import com.vladdev.shared.chats.IncomingTyping
 import com.vladdev.shared.chats.dto.DecryptedMessage
+import com.vladdev.shared.chats.dto.MediaDto
+import com.vladdev.shared.chats.dto.MediaState
 import com.vladdev.shared.chats.dto.MessageStatus
 import com.vladdev.shared.chats.dto.MessageStatusDto
+import com.vladdev.shared.chats.dto.ReactionDto
+import com.vladdev.shared.chats.extensionFromMime
 import com.vladdev.shared.crypto.E2eeManager
 import com.vladdev.shared.user.dto.PresenceResponse
 import kotlinx.coroutines.Dispatchers
@@ -35,7 +56,10 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.InternalSerializationApi
+import java.io.ByteArrayOutputStream
+import java.io.File
 import java.util.UUID
 
 @OptIn(InternalSerializationApi::class)
@@ -105,6 +129,36 @@ class ChatViewModel(
         loadPinnedMessages()
         startPresencePolling()
     }
+    private val _revealedSpoilers = mutableStateMapOf<String, Set<Int>>()
+    val revealedSpoilers: Map<String, Set<Int>> = _revealedSpoilers
+
+    fun revealSpoiler(messageId: String, spoilerIndex: Int) {
+        val current = _revealedSpoilers[messageId] ?: emptySet()
+        _revealedSpoilers[messageId] = current + spoilerIndex
+    }
+
+    // ── Состояние очереди вложений ─────────────────────────────────────────────
+
+    var pendingMedia = mutableStateListOf<MediaPendingItem>()
+        private set
+
+    var mediaError by mutableStateOf<String?>(null)
+        private set
+
+    // Для просмотра медиа
+    var mediaViewerMessage by mutableStateOf<DecryptedMessage?>(null)
+        private set
+
+    fun openMediaViewer(message: DecryptedMessage) {
+        if (message.mediaLocalPath != null) {
+            mediaViewerMessage = message
+        } else {
+            // Инициируем загрузку, потом откроем
+            downloadMedia(message)
+        }
+    }
+
+    fun closeMediaViewer() { mediaViewerMessage = null }
 
     fun onMessageChange(text: String) {
         newMessage = text
@@ -177,7 +231,20 @@ class ChatViewModel(
         }
     }
     fun sendMessage() {
-        if (newMessage.isBlank()) return
+        val hasPendingMedia = pendingMedia.any { !it.isOverLimit }
+
+        // Выходим только если нет ни текста ни медиа
+        if (newMessage.isBlank() && !hasPendingMedia) return
+
+        // Медиа отправляем первыми
+        if (hasPendingMedia) {
+            val mediaToSend = pendingMedia.filter { !it.isOverLimit }.toList()
+            pendingMedia.clear()
+            sendMediaMessages(mediaToSend, captionText = newMessage.trim())
+            newMessage = ""
+            replyTo = null
+            return
+        }
 
         // Если редактируем
         editingMessage?.let { editing ->
@@ -251,12 +318,12 @@ class ChatViewModel(
         viewModelScope.launch {
             try {
                 val history = repository.getMessages(chatId, currentUserId ?: "")
-                _messages.value = history.sortedByDescending { it.createdAt }
-
-                // Помечаем все непрочитанные входящие как прочитанные
-                markAllIncomingAsRead(history)
+                val sorted  = history.sortedByDescending { it.createdAt }
+                _messages.value = sorted
+                markAllIncomingAsRead(sorted)
+                autoDownloadMedia(sorted)
             } catch (e: Exception) {
-                Log.e(MainApplication.LogTags.CHAT_VM, "HISTORY ERROR", e)
+                Log.e("ChatVM", "HISTORY ERROR", e)
             }
         }
     }
@@ -288,74 +355,74 @@ class ChatViewModel(
                             val msg = event.message
 
                             if (msg.senderId == currentUserId) {
+                                // Наше эхо — ищем оптимистичный плейсхолдер
                                 _messages.update { old ->
-                                    val existing = old.firstOrNull {
-                                        it.senderId == currentUserId &&
-                                                it.id.startsWith("optimistic_") &&
-                                                it.text == (e2ee.getOutgoingPlaintext(chatId, msg.id) ?: "") // Или сравнение с расшифрованным текстом
-                                    }
-                                    if (existing != null) {
-                                        old.map {
-                                            if (it.id == existing.id) it.copy(
+                                    val optimistic = old.firstOrNull { it.id.startsWith("optimistic_") }
+
+                                    if (optimistic != null) {
+                                        // Заменяем плейсхолдер реальным сообщением
+                                        old.map { m ->
+                                            if (m.id != optimistic.id) return@map m
+
+                                            // Для медиасообщений берём media из эхо-события
+                                            val mediaFromEcho = msg.media
+
+                                            m.copy(
                                                 id                = msg.id,
                                                 statuses          = msg.statuses,
-                                                // Берём из сервера только если не null, иначе оставляем из optimistic
-                                                forwardedFromId = msg.forwardedFromId?.takeIf { it.isNotBlank() } ?: it.forwardedFromId,
-                                                forwardedFromName = msg.forwardedFromName?.takeIf { it.isNotBlank() } ?: it.forwardedFromName
+                                                media             = mediaFromEcho ?: m.media,
+                                                // Сохраняем mediaState и mediaLocalPath из оптимистичного
+                                                // (они уже установлены правильно)
+                                                forwardedFromId   = msg.forwardedFromId
+                                                    ?.takeIf { it.isNotBlank() } ?: m.forwardedFromId,
+                                                forwardedFromName = msg.forwardedFromName
+                                                    ?.takeIf { it.isNotBlank() } ?: m.forwardedFromName
                                             )
-                                            else it
                                         }
                                     } else if (old.none { it.id == msg.id }) {
-                                        val plaintext = e2ee.getOutgoingPlaintext(chatId, msg.id)
-                                        if (plaintext != null) {
-                                            val decrypted = DecryptedMessage(
-                                                id                = msg.id,
-                                                chatId            = msg.chatId,
-                                                senderId          = msg.senderId,
-                                                text              = plaintext,
-                                                createdAt         = msg.createdAt,
-                                                deletedForAll     = false,
-                                                statuses          = msg.statuses,
-                                                forwardedFromId   = msg.forwardedFromId,
-                                                forwardedFromName = msg.forwardedFromName
+                                        // Эхо без оптимистичного плейсхолдера — строим из processIncomingMessage
+                                        viewModelScope.launch {
+                                            val decrypted = repository.processIncomingMessage(
+                                                msg      = msg,
+                                                chatId   = chatId,
+                                                myUserId = currentUserId ?: ""
                                             )
-                                            listOf(decrypted) + old
-                                        } else old
+                                            if (decrypted != null) {
+                                                _messages.update { current ->
+                                                    if (current.any { it.id == decrypted.id }) current
+                                                    else listOf(decrypted) + current
+                                                }
+                                            }
+                                        }
+                                        old
                                     } else old
                                 }
                                 return@collect
                             }
 
-                            // Чужое сообщение — без изменений
-                            val plaintext = when {
-                                msg.deletedForAll -> null
-                                else -> e2ee.decryptMessage(chatId, msg.encryptedContent)
-                            }
+                            // Входящее от собеседника
+                            viewModelScope.launch {
+                                val decrypted = repository.processIncomingMessage(
+                                    msg      = msg,
+                                    chatId   = chatId,
+                                    myUserId = currentUserId ?: ""
+                                ) ?: return@launch
 
-                            val decrypted = DecryptedMessage(
-                                id                = msg.id,
-                                chatId            = msg.chatId,
-                                senderId          = msg.senderId,
-                                text              = plaintext,
-                                createdAt         = msg.createdAt,
-                                deletedForAll     = msg.deletedForAll,
-                                statuses          = msg.statuses,
-                                forwardedFromId   = msg.forwardedFromId,
-                                forwardedFromName = msg.forwardedFromName
-                            )
-
-                            _messages.update { old ->
-                                if (old.any { it.id == decrypted.id }) return@update old
-                                val insertIndex = old.indexOfFirst {
-                                    it.createdAt < decrypted.createdAt
-                                }.let { if (it == -1) old.size else it }
-                                buildList {
-                                    addAll(old)
-                                    add(insertIndex, decrypted)
+                                _messages.update { old ->
+                                    if (old.any { it.id == decrypted.id }) return@update old
+                                    val insertIndex = old.indexOfFirst {
+                                        it.createdAt < decrypted.createdAt
+                                    }.let { if (it == -1) old.size else it }
+                                    buildList {
+                                        addAll(old)
+                                        add(insertIndex, decrypted)
+                                    }
                                 }
+                                if (decrypted.media != null && decrypted.mediaLocalPath == null) {
+                                    downloadMedia(decrypted)
+                                }
+                                currentUserId?.let { repository.sendRead(chatId, msg.id, it) }
                             }
-
-                            currentUserId?.let { repository.sendRead(chatId, msg.id, it) }
                         }
 
                         is IncomingStatus -> {
@@ -386,8 +453,9 @@ class ChatViewModel(
                                 val plaintext = if (event.senderId == currentUserId) {
                                     e2ee.getOutgoingPlaintext(chatId, event.messageId)
                                 } else {
-                                    e2ee.decryptMessage(chatId, event.encryptedContent)
-                                        .also { if (it == null) println("IncomingEdit: decrypt failed for ${event.messageId}") }
+                                    e2ee.decryptMessage(chatId, event.encryptedContent)?.also { pt ->
+                                        e2ee.saveIncomingPlaintext(chatId, event.messageId, pt)  // ← обновляем кэш
+                                    }
                                 }
 
                                 _messages.update { old ->
@@ -443,6 +511,40 @@ class ChatViewModel(
                                 _uiEvents.tryEmit(ChatUiEvent.HistoryCleared)
                             }
                         }
+
+                        is IncomingReaction -> {
+                            _messages.update { old ->
+                                old.map { msg ->
+                                    if (msg.id != event.messageId) return@map msg
+
+                                    var reactions = msg.reactions
+
+                                    // Если сервер сообщил о вытесненной реакции — убираем её
+                                    event.replacedEmoji?.let { replaced ->
+                                        reactions = reactions.filterNot {
+                                            it.userId == event.userId && it.emoji == replaced
+                                        }
+                                    }
+
+                                    reactions = if (event.remove) {
+                                        // Убираем реакцию
+                                        reactions.filterNot { it.userId == event.userId && it.emoji == event.emoji }
+                                    } else {
+                                        // Добавляем, избегая дублей
+                                        if (reactions.none { it.userId == event.userId && it.emoji == event.emoji }) {
+                                            reactions + ReactionDto(
+                                                emoji     = event.emoji,
+                                                userId    = event.userId,
+                                                createdAt = event.createdAt
+                                            )
+                                        } else reactions
+                                    }
+
+                                    msg.copy(reactions = reactions)
+                                }
+                            }
+                        }
+
                     }
                 }
             }
@@ -617,4 +719,420 @@ class ChatViewModel(
             else                    -> "at:${presence.lastSeenAt}"
         }
     }
+
+    fun toggleReaction(message: DecryptedMessage, emoji: String) {
+        val myId = currentUserId ?: return
+        val isRemoving = message.reactions.any { it.userId == myId && it.emoji == emoji }
+
+        // Оптимистичное обновление
+        _messages.update { old ->
+            old.map { msg ->
+                if (msg.id != message.id) return@map msg
+
+                val reactions = if (isRemoving) {
+                    msg.reactions.filterNot { it.userId == myId && it.emoji == emoji }
+                } else {
+                    var updated = msg.reactions
+                    // Локально вытесняем самую раннюю если уже 3
+                    val myReactions = updated
+                        .filter { it.userId == myId }
+                        .sortedBy { it.createdAt }
+                    if (myReactions.size >= 3) {
+                        val oldest = myReactions.first()
+                        updated = updated.filterNot { it.userId == myId && it.emoji == oldest.emoji }
+                    }
+                    updated + ReactionDto(
+                        emoji     = emoji,
+                        userId    = myId,
+                        createdAt = System.currentTimeMillis()
+                    )
+                }
+
+                msg.copy(reactions = reactions)
+            }
+        }
+
+        viewModelScope.launch {
+            try {
+                repository.sendReaction(chatId, message.id, emoji, myId, isRemoving)
+            } catch (e: Exception) {
+                // Откат — восстанавливаем исходные реакции
+                _messages.update { old ->
+                    old.map { msg ->
+                        if (msg.id == message.id) msg.copy(reactions = message.reactions)
+                        else msg
+                    }
+                }
+            }
+        }
+    }
+
+    fun resolveUserAndOpen(
+        userId: String,
+        fallbackName: String,
+        onReady: (name: String, username: String, status: String) -> Unit
+    ) {
+        viewModelScope.launch {
+            repository.searchUserById(userId)
+                .onSuccess { onReady(it.name, it.username, it.status) }
+                .onFailure  { onReady(fallbackName, fallbackName, "standard") }
+        }
+    }
+
+    fun resolveUserByUsernameAndOpen(
+        username: String,
+        onReady: (userId: String, name: String, nick: String, status: String) -> Unit
+    ) {
+        viewModelScope.launch {
+            repository.searchUser(username)
+                .onSuccess { response ->
+                    val user = response.user
+                    if (user != null) {
+                        onReady(user.userId, user.name, user.username, user.status)
+                    } else {
+                        error = "Пользователь @$username не найден"
+                    }
+                }
+                .onFailure {
+                    error = "Пользователь @$username не найден"
+                }
+        }
+    }
+
+    fun onMediaPicked(uris: List<Uri>) {
+        val context = getApplication<Application>()
+
+        viewModelScope.launch(Dispatchers.IO) {
+            val newItems = uris.mapNotNull { uri ->
+                runCatching { buildPendingItem(context, uri) }.getOrNull()
+            }
+
+            // Проверяем лимиты
+            val currentPhotos = pendingMedia.count { it.type == PendingMediaType.PHOTO }
+            val currentVideos = pendingMedia.count { it.type == PendingMediaType.VIDEO }
+
+            var addedPhotos = 0; var addedVideos = 0
+            val errors = mutableListOf<String>()
+
+            for (item in newItems) {
+                when {
+                    item.type == PendingMediaType.PHOTO && currentPhotos + addedPhotos >= MAX_PHOTOS -> {
+                        errors += "Максимум $MAX_PHOTOS фото за раз"
+                        break
+                    }
+                    item.type == PendingMediaType.VIDEO && currentVideos + addedVideos >= MAX_VIDEOS -> {
+                        errors += "Максимум $MAX_VIDEOS видео за раз"
+                        break
+                    }
+                    else -> {
+                        pendingMedia.add(item)
+                        if (item.type == PendingMediaType.PHOTO) addedPhotos++
+                        else addedVideos++
+                    }
+                }
+            }
+
+            if (errors.isNotEmpty()) {
+                withContext(Dispatchers.Main) { mediaError = errors.first() }
+            }
+        }
+    }
+
+    fun removePendingMedia(localId: String) {
+        pendingMedia.removeIf { it.localId == localId }
+    }
+
+    fun clearMediaError() { mediaError = null }
+
+    private suspend fun buildPendingItem(context: Context, uri: Uri): MediaPendingItem {
+        val cr       = context.contentResolver
+        val mimeType = cr.getType(uri) ?: "application/octet-stream"
+        val isVideo  = mimeType.startsWith("video")
+        val type     = if (isVideo) PendingMediaType.VIDEO else PendingMediaType.PHOTO
+
+        // Размер файла
+        val sizeBytes = cr.query(uri, arrayOf(OpenableColumns.SIZE), null, null, null)?.use { cursor ->
+            if (cursor.moveToFirst()) cursor.getLong(cursor.getColumnIndexOrThrow(OpenableColumns.SIZE))
+            else 0L
+        } ?: 0L
+
+        val maxBytes = if (isVideo) VIDEO_MAX_BYTES else PHOTO_MAX_BYTES
+        val isOver   = sizeBytes > maxBytes
+
+        // Превью
+        val thumb: Bitmap? = if (isVideo) {
+            val retriever = MediaMetadataRetriever()
+            runCatching {
+                retriever.setDataSource(context, uri)
+                // Берём кадр на 1й секунде (или на 0 если видео короче)
+                retriever.getFrameAtTime(
+                    1_000_000L, // 1 секунда в микросекундах
+                    MediaMetadataRetriever.OPTION_CLOSEST_SYNC
+                )?.let { frame ->
+                    // Масштабируем до 200x200 сохраняя пропорции
+                    val scale = 200f / maxOf(frame.width, frame.height)
+                    Bitmap.createScaledBitmap(
+                        frame,
+                        (frame.width * scale).toInt(),
+                        (frame.height * scale).toInt(),
+                        true
+                    )
+                }
+            }.also {
+                retriever.release()
+            }.getOrNull()
+        } else {
+            // Фото — без изменений
+            runCatching {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    context.contentResolver.loadThumbnail(uri, Size(200, 200), null)
+                } else {
+                    BitmapFactory.decodeStream(context.contentResolver.openInputStream(uri))
+                        ?.let { bmp ->
+                            val scale = 200f / maxOf(bmp.width, bmp.height)
+                            Bitmap.createScaledBitmap(
+                                bmp,
+                                (bmp.width * scale).toInt(),
+                                (bmp.height * scale).toInt(),
+                                true
+                            )
+                        }
+                }
+            }.getOrNull()
+        }
+
+        // Длительность видео
+        val durationMs: Long? = if (isVideo) {
+            val retriever = MediaMetadataRetriever()
+            runCatching {
+                retriever.setDataSource(context, uri)
+                retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLong()
+            }.also { retriever.release() }.getOrNull()
+        } else null
+
+        return MediaPendingItem(
+            uri       = uri,
+            type      = type,
+            mimeType  = mimeType,
+            sizeBytes = sizeBytes,
+            thumbBitmap = thumb,
+            durationMs  = durationMs,
+            isOverLimit = isOver
+        )
+    }
+
+    // ChatViewModel.sendMediaMessages — обновлённая версия
+
+    private fun sendMediaMessages(items: List<MediaPendingItem>, captionText: String) {
+        val context = getApplication<Application>()
+
+        // Группируем все items как одно сообщение с tempId группы
+        val groupTempId = "optimistic_${UUID.randomUUID()}"
+        val mediaGroupId = UUID.randomUUID().toString()
+        items.forEachIndexed { index, item ->
+            val caption = if (index == 0) captionText else ""
+
+            viewModelScope.launch(Dispatchers.IO) {
+                // Оптимистичный плейсхолдер — DOWNLOADING сразу (идёт upload)
+                val tempId = if (index == 0) groupTempId
+                else "optimistic_${UUID.randomUUID()}"
+
+                val optimistic = DecryptedMessage(
+                    id         = tempId,
+                    chatId     = chatId,
+                    senderId   = currentUserId ?: "",
+                    text       = caption.ifBlank { null },
+                    createdAt  = System.currentTimeMillis() + index, // разные timestamps
+                    media      = MediaDto(
+                        id        = tempId,
+                        type      = item.type.name,
+                        mimeType  = item.mimeType,
+                        sizeBytes = item.sizeBytes,
+                        createdAt = System.currentTimeMillis()
+                    ),
+                    mediaState = MediaState.DOWNLOADING, // upload идёт — показываем прогресс
+                    mediaGroupId = mediaGroupId
+                )
+
+                withContext(Dispatchers.Main) {
+                    _messages.update { listOf(optimistic) + it }
+                }
+
+                try {
+                    val rawBytes = context.contentResolver
+                        .openInputStream(item.uri)?.readBytes() ?: return@launch
+
+                    val (compressedBytes, finalMime) = compressMedia(rawBytes, item)
+                    val metaJson   = buildMetadataJson(item)
+                    val thumbBytes = item.thumbBitmap?.let { bmp ->
+                        ByteArrayOutputStream().also { out ->
+                            bmp.compress(Bitmap.CompressFormat.JPEG, 80, out)
+                        }.toByteArray()
+                    }
+
+                    repository.sendMediaMessage(
+                        chatId          = chatId,
+                        theirUserId     = theirUserId,
+                        mediaType       = item.type.name,
+                        mimeType        = finalMime,
+                        fileName        = "media_${System.currentTimeMillis()}",
+                        plainFileBytes  = compressedBytes,
+                        plainThumbBytes = thumbBytes,
+                        metadataJson    = metaJson,
+                        caption         = caption,
+                        replyToId       = if (index == 0) replyTo?.id else null,
+                        onUploaded      = { mediaId ->
+                            // Сохраняем расшифрованный файл в кэш сразу
+                            val ext  = extensionFromMime(finalMime)
+                            val file = File(context.cacheDir, "media_${mediaId}.$ext")
+                            if (!file.exists()) file.writeBytes(compressedBytes)
+                            thumbBytes?.let { tb ->
+                                val thumbFile = File(context.cacheDir, "thumb_${mediaId}.jpg")
+                                if (!thumbFile.exists()) thumbFile.writeBytes(tb)
+                            }
+                            // Обновляем плейсхолдер — файл уже на диске, ставим READY
+                            val ext2      = extensionFromMime(finalMime)
+                            val localPath = File(context.cacheDir, "media_${mediaId}.$ext2").absolutePath
+                            viewModelScope.launch(Dispatchers.Main) {
+                                _messages.update { old ->
+                                    old.map { m ->
+                                        if (m.id == tempId)
+                                            m.copy(
+                                                mediaState     = MediaState.READY,
+                                                mediaLocalPath = localPath,
+                                                media          = m.media?.copy(id = mediaId)
+                                            )
+                                        else m
+                                    }
+                                }
+                            }
+                        }
+                    )
+
+                    withContext(Dispatchers.Main) {
+                        isScrollToBottomPending = true
+                        if (index == 0) replyTo = null
+                    }
+
+                } catch (e: Exception) {
+                    withContext(Dispatchers.Main) {
+                        _messages.update { it.filterNot { m -> m.id == tempId } }
+                        error = "Не удалось отправить медиа: ${e.message}"
+                    }
+                }
+            }
+        }
+    }
+
+    private fun compressMedia(
+        rawBytes: ByteArray,
+        item: MediaPendingItem
+    ): Pair<ByteArray, String> {
+        if (item.type == PendingMediaType.VIDEO) {
+            // Видео не сжимаем на клиенте — сервер только проверяет размер
+            // Транскодирование требует MediaCodec и выходит за рамки
+            return rawBytes to item.mimeType
+        }
+
+        // Фото — сжимаем если > 5MB
+        if (item.sizeBytes <= PHOTO_MAX_BYTES) return rawBytes to item.mimeType
+
+        val bmp = BitmapFactory.decodeByteArray(rawBytes, 0, rawBytes.size)
+            ?: return rawBytes to item.mimeType
+
+        var quality = 85
+        var result  = rawBytes
+        val out     = ByteArrayOutputStream()
+
+        // Ступенчатое снижение качества пока не вложимся в лимит
+        while (quality >= 40) {
+            out.reset()
+            bmp.compress(Bitmap.CompressFormat.JPEG, quality, out)
+            result = out.toByteArray()
+            if (result.size <= PHOTO_MAX_BYTES) break
+            quality -= 10
+        }
+
+        // Если всё равно больше — масштабируем
+        if (result.size > PHOTO_MAX_BYTES) {
+            val scale  = Math.sqrt(PHOTO_MAX_BYTES.toDouble() / result.size).toFloat()
+            val scaled = Bitmap.createScaledBitmap(
+                bmp,
+                (bmp.width * scale).toInt(),
+                (bmp.height * scale).toInt(),
+                true
+            )
+            out.reset()
+            scaled.compress(Bitmap.CompressFormat.JPEG, 75, out)
+            result = out.toByteArray()
+        }
+
+        return result to "image/jpeg"
+    }
+
+    private fun buildMetadataJson(item: MediaPendingItem): String {
+        val parts = mutableListOf<String>()
+        item.thumbBitmap?.let { bmp ->
+            parts += "\"width\":${bmp.width}"
+            parts += "\"height\":${bmp.height}"
+        }
+        item.durationMs?.let { parts += "\"durationSec\":${it / 1000}" }
+        return "{${parts.joinToString(",")}}"
+    }
+
+    fun downloadMedia(message: DecryptedMessage) {
+        val media = message.media ?: return
+
+        if (message.mediaState == MediaState.DOWNLOADING ||
+            message.mediaState == MediaState.DECRYPTING  ||
+            message.mediaState == MediaState.READY) return
+
+        updateMediaState(message.id, MediaState.DOWNLOADING)
+
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val path = repository.downloadAndDecryptMedia(
+                    messageId = message.id,
+                    chatId    = chatId,
+                    media     = media,
+                    senderId  = message.senderId
+                )
+                withContext(Dispatchers.Main) {
+                    _messages.update { old ->
+                        old.map { m ->
+                            if (m.id == message.id)
+                                m.copy(mediaLocalPath = path, mediaState = MediaState.READY)
+                            else m
+                        }
+                    }
+                    // Если пользователь уже тапнул и ждёт — открываем viewer
+                    if (mediaViewerMessage?.id == message.id) {
+                        mediaViewerMessage = _messages.value.firstOrNull { it.id == message.id }
+                    }
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    updateMediaState(message.id, MediaState.ERROR)
+                }
+            }
+        }
+    }
+
+    private fun updateMediaState(messageId: String, state: MediaState) {
+        _messages.update { old ->
+            old.map { m -> if (m.id == messageId) m.copy(mediaState = state) else m }
+        }
+    }
+
+    private fun autoDownloadMedia(messages: List<DecryptedMessage>) {
+        messages.forEach { msg ->
+            if (msg.media != null &&
+                msg.mediaLocalPath == null &&
+                msg.mediaState == MediaState.IDLE
+            ) {
+                downloadMedia(msg)
+            }
+        }
+    }
+
 }

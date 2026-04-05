@@ -3,9 +3,6 @@ package com.vladdev.shared.chats
 import com.vladdev.shared.chats.dto.MessageDto
 import com.vladdev.shared.chats.dto.MessageStatus
 import kotlinx.serialization.InternalSerializationApi
-
-// com/vladdev/shared/chats/WsEvents.kt
-
 sealed class WsIncomingEvent
 data class IncomingMessage @OptIn(InternalSerializationApi::class) constructor(val message: MessageDto) : WsIncomingEvent()
 data class IncomingStatus(val messageId: String, val userId: String, val status: MessageStatus) : WsIncomingEvent()
@@ -24,6 +21,14 @@ data class IncomingPin(
 data class IncomingTyping(
     val userId: String,
     val isTyping: Boolean
+) : WsIncomingEvent()
+data class IncomingReaction(
+    val messageId: String,
+    val emoji: String,
+    val userId: String,
+    val remove: Boolean,
+    val createdAt: Long,
+    val replacedEmoji: String?
 ) : WsIncomingEvent()
 // WsIncomingEvent:
 data class IncomingChatDeleted(val chatId: String) : WsIncomingEvent()

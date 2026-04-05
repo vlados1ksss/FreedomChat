@@ -5,6 +5,7 @@ import com.vladdev.shared.chats.dto.ChatDto
 import com.vladdev.shared.chats.dto.ChatIdResponse
 import com.vladdev.shared.chats.dto.ChatRequestDto
 import com.vladdev.shared.chats.dto.ForwardedMessagePayload
+import com.vladdev.shared.chats.dto.MediaUploadResponse
 import com.vladdev.shared.chats.dto.MessageDto
 import com.vladdev.shared.chats.dto.MessageStatus
 import com.vladdev.shared.chats.dto.RequestIdResponse
@@ -15,21 +16,27 @@ import com.vladdev.shared.chats.dto.WsChatDeletedEvent
 import com.vladdev.shared.chats.dto.WsHistoryClearedEvent
 import com.vladdev.shared.chats.dto.WsMessageEvent
 import com.vladdev.shared.chats.dto.WsPinEvent
+import com.vladdev.shared.chats.dto.WsReactionEvent
 import com.vladdev.shared.chats.dto.WsStatusEvent
 import com.vladdev.shared.chats.dto.WsTypingEvent
 import com.vladdev.shared.storage.TokenStorage
 import com.vladdev.shared.user.dto.PresenceResponse
+import com.vladdev.shared.user.dto.UserProfileResponse
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
 import io.ktor.client.plugins.websocket.DefaultClientWebSocketSession
 import io.ktor.client.plugins.websocket.webSocketSession
 import io.ktor.client.request.delete
+import io.ktor.client.request.forms.formData
+import io.ktor.client.request.forms.submitFormWithBinaryData
 import io.ktor.client.request.get
 import io.ktor.client.request.parameter
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
 import io.ktor.client.statement.HttpResponse
 import io.ktor.http.ContentType
+import io.ktor.http.Headers
+import io.ktor.http.HttpHeaders
 import io.ktor.http.contentType
 import io.ktor.http.encodedPath
 import io.ktor.http.isSuccess
@@ -39,6 +46,8 @@ import io.ktor.websocket.close
 import io.ktor.websocket.readText
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
@@ -47,6 +56,7 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlin.coroutines.cancellation.CancellationException
 
 @OptIn(InternalSerializationApi::class)
 class ChatApi(private val client: HttpClient, private val tokenStorage: TokenStorage) {
@@ -55,11 +65,11 @@ class ChatApi(private val client: HttpClient, private val tokenStorage: TokenSto
         encodeDefaults = true
         ignoreUnknownKeys = true
     }
-    private val baseWsUrl = "ws://176.124.199.31:8080"
-    private val baseUrl = "http://176.124.199.31:8080"
+    private val baseUrl = "http://176.124.199.31/api/"
+    private val baseMediaUrl = "http://176.124.199.31/api/media"
 
     private val wsConnections = mutableMapOf<String, DefaultClientWebSocketSession>()
-
+    private val wsReconnectJobs = mutableMapOf<String, Job>()
     suspend inline fun <reified T> HttpResponse.safeBody(): T {
         if (!status.isSuccess()) throw Exception("HTTP ${status.value}")
         return body()
@@ -92,6 +102,8 @@ class ChatApi(private val client: HttpClient, private val tokenStorage: TokenSto
 
     suspend fun getPublicKey(userId: String): PublicKeyResponse =
         client.get("$baseUrl/keys/$userId").safeBody()
+    suspend fun getUserById(userId: String): UserProfileResponse =
+        client.get("$baseUrl/profile/$userId/public").safeBody()
 
     suspend fun openChatWebSocket(
         chatId: String,
@@ -110,12 +122,12 @@ class ChatApi(private val client: HttpClient, private val tokenStorage: TokenSto
 
         val session = client.webSocketSession {
             url {
-                takeFrom(baseWsUrl)
-                encodedPath = "/ws/chats/$chatId"
+                takeFrom("ws://176.124.199.31")
+                encodedPath = "/api/ws/chats/$chatId"
                 parameters.append("token", token)
             }
         }
-
+        connectWithRetry(chatId, scope, onEvent)
         wsConnections[chatId] = session
 
         scope.launch {
@@ -163,6 +175,17 @@ class ChatApi(private val client: HttpClient, private val tokenStorage: TokenSto
                                 val e = Json.decodeFromString<WsHistoryClearedEvent>(text)
                                 IncomingHistoryCleared(e.chatId)
                             }
+                            "reaction" -> {
+                                val e = Json.decodeFromString<WsReactionEvent>(text)
+                                IncomingReaction(
+                                    messageId    = e.messageId,
+                                    emoji        = e.emoji,
+                                    userId       = e.userId,
+                                    remove       = e.remove,
+                                    createdAt    = e.createdAt,
+                                    replacedEmoji = e.replacedEmoji
+                                )
+                            }
                             else -> continue
                         }
                         onEvent(event)
@@ -174,6 +197,124 @@ class ChatApi(private val client: HttpClient, private val tokenStorage: TokenSto
             }
         }
     }
+    private fun connectWithRetry(
+        chatId: String,
+        scope: CoroutineScope,
+        onEvent: (WsIncomingEvent) -> Unit
+    ) {
+        wsReconnectJobs[chatId]?.cancel()
+        wsReconnectJobs[chatId] = scope.launch {
+            var attempt = 0
+            while (isActive) {
+                try {
+                    println("WS connecting for $chatId, attempt=$attempt")
+                    val token = tokenStorage.getAccessToken()
+                        ?: throw IllegalStateException("No access token")
+
+                    val session = client.webSocketSession {
+                        url {
+                            takeFrom("ws://176.124.199.31")
+                            encodedPath = "/api/ws/chats/$chatId"
+                            parameters.append("token", token)
+                        }
+                    }
+
+                    wsConnections[chatId] = session
+                    attempt = 0  // сброс счётчика при успехе
+                    println("WS connected for $chatId")
+
+                    // Читаем фреймы
+                    try {
+                        for (frame in session.incoming) {
+                            if (frame is Frame.Text) {
+                                val text = frame.readText()
+                                parseAndEmit(chatId, text, onEvent)
+                            }
+                        }
+                    } catch (e: Exception) {
+                        println("WS read error for $chatId: ${e.message}")
+                    } finally {
+                        wsConnections.remove(chatId)
+                        println("WS disconnected for $chatId")
+                    }
+
+                } catch (e: CancellationException) {
+                    throw e  // не перехватываем отмену корутины
+                } catch (e: Exception) {
+                    wsConnections.remove(chatId)
+                    println("WS connection failed for $chatId: ${e.message}")
+                }
+
+                if (!isActive) break
+
+                // Экспоненциальная задержка: 1, 2, 4, 8, 16 сек максимум
+                val delayMs = minOf(1000L * (1 shl attempt), 16_000L)
+                attempt = minOf(attempt + 1, 4)
+                println("WS reconnecting for $chatId in ${delayMs}ms")
+                delay(delayMs)
+            }
+        }
+    }
+
+    // Парсинг вынести в отдельный метод:
+    private fun parseAndEmit(
+        chatId: String,
+        text: String,
+        onEvent: (WsIncomingEvent) -> Unit
+    ) {
+        try {
+            val json = Json { ignoreUnknownKeys = true }
+            val type = json.parseToJsonElement(text)
+                .jsonObject["type"]?.jsonPrimitive?.content
+
+            val event: WsIncomingEvent = when (type) {
+                "message" -> {
+                    val e = json.decodeFromString<WsMessageEvent>(text)
+                    // resolvePendingMessage нужен для ЛЮБОГО сообщения — текст или медиа
+                    if (e.message.id.isNotEmpty()) {
+                        resolvePendingMessage(chatId, e.message.id)
+                    }
+                    IncomingMessage(e.message)
+                }
+                "status"  -> {
+                    val e = json.decodeFromString<WsStatusEvent>(text)
+                    IncomingStatus(e.messageId, e.userId, e.status)
+                }
+                "delete"  -> {
+                    val e = json.decodeFromString<WsDeleteEvent>(text)
+                    IncomingDelete(e.messageId, e.deleteForAll)
+                }
+                "edit"    -> {
+                    val e = json.decodeFromString<WsEditEvent>(text)
+                    IncomingEdit(e.messageId, e.senderId, e.encryptedContent, e.editedAt)
+                }
+                "pin"     -> {
+                    val e = json.decodeFromString<WsPinEvent>(text)
+                    IncomingPin(e.messageId, e.unpin)
+                }
+                "typing"  -> {
+                    val e = json.decodeFromString<WsTypingEvent>(text)
+                    IncomingTyping(e.userId, e.isTyping)
+                }
+                "chat_deleted" -> {
+                    val e = json.decodeFromString<WsChatDeletedEvent>(text)
+                    IncomingChatDeleted(e.chatId)
+                }
+                "history_cleared" -> {
+                    val e = json.decodeFromString<WsHistoryClearedEvent>(text)
+                    IncomingHistoryCleared(e.chatId)
+                }
+                "reaction" -> {
+                    val e = Json.decodeFromString<WsReactionEvent>(text)
+                    IncomingReaction(e.messageId, e.emoji, e.userId, e.remove, e.createdAt, e.replacedEmoji)
+                }
+                else -> return
+            }
+            onEvent(event)
+        } catch (e: Exception) {
+            println("WS parse error for $chatId: ${e.message}")
+        }
+    }
 
     suspend fun sendMessageWS(
         chatId: String,
@@ -181,7 +322,12 @@ class ChatApi(private val client: HttpClient, private val tokenStorage: TokenSto
         replyToId: String? = null,
         replyToPreview: String? = null
     ): String {
-        val session = wsConnections[chatId] ?: throw IllegalStateException("WS not open")
+        val session = wsConnections[chatId]
+        if (session == null || !session.isActive) {
+            throw IllegalStateException("WS not connected for $chatId")
+        }
+
+        println("WS send attempt for $chatId, session isActive=${session.isActive}")
         val pendingId = CompletableDeferred<String>()
         pendingMessages[chatId] = pendingId
 
@@ -194,7 +340,7 @@ class ChatApi(private val client: HttpClient, private val tokenStorage: TokenSto
             replyToPreview = replyToPreview
         )
         session.send(Frame.Text(AppJson.encodeToString(event)))
-        return withTimeout(5000) { pendingId.await() }
+        return withTimeout(15000) { pendingId.await() }
     }
 
     private val pendingMessages = mutableMapOf<String, CompletableDeferred<String>>()
@@ -225,9 +371,9 @@ class ChatApi(private val client: HttpClient, private val tokenStorage: TokenSto
     }
 
     suspend fun closeChatWebSocket(chatId: String) {
+        wsReconnectJobs.remove(chatId)?.cancel()
         wsConnections.remove(chatId)?.close()
     }
-
     suspend fun setChatMuted(chatId: String, muted: Boolean) {
         client.post("$baseUrl/chats/$chatId/mute") {
             contentType(ContentType.Application.Json)
@@ -279,5 +425,112 @@ class ChatApi(private val client: HttpClient, private val tokenStorage: TokenSto
 
     suspend fun clearHistory(chatId: String) {
         client.delete("$baseUrl/chats/$chatId/history")
+    }
+
+    suspend fun sendReactionWS(
+        chatId: String,
+        messageId: String,
+        emoji: String,
+        userId: String,
+        remove: Boolean
+    ) {
+        val session = wsConnections[chatId] ?: return
+        session.send(Frame.Text(AppJson.encodeToString(
+            WsReactionEvent(
+                messageId = messageId,
+                emoji     = emoji,
+                userId    = userId,
+                remove    = remove
+            )
+        )))
+    }
+
+    suspend fun uploadMedia(
+        chatId: String?,
+        type: String,                     // "PHOTO"|"VIDEO"|"VOICE"|"VIDEO_NOTE"|"AVATAR"
+        mimeType: String,
+        originalFileName: String,
+        encryptedFile: ByteArray,
+        encryptedThumb: ByteArray?,
+        metadataJson: String?
+    ): MediaUploadResponse {
+        return client.submitFormWithBinaryData(
+            url = "$baseMediaUrl/upload",
+            formData = formData {
+                append("type",     type)
+                append("mimeType", mimeType)
+                chatId?.let { append("chatId", it) }
+                metadataJson?.let { append("metadata", it) }
+
+                append(
+                    "file",
+                    encryptedFile,
+                    Headers.build {
+                        append(
+                            HttpHeaders.ContentDisposition,
+                            "form-data; name=\"file\"; filename=\"$originalFileName\"")
+                        append(HttpHeaders.ContentType, "application/octet-stream")
+                    }
+                )
+
+                encryptedThumb?.let { thumb ->
+                    append(
+                        "thumb",
+                        thumb,
+                        Headers.build {
+                            append(HttpHeaders.ContentDisposition,
+                                "form-data; name=\"thumb\"; filename=\"thumb_$originalFileName\"")
+                            append(HttpHeaders.ContentType, "application/octet-stream")
+                        }
+                    )
+                }
+            }
+        ).safeBody()
+    }
+    suspend fun downloadMedia(mediaId: String, chatId: String?): ByteArray {
+        val url = buildString {
+            append("$baseMediaUrl/$mediaId")
+            if (chatId != null) append("?chatId=$chatId")
+        }
+        return client.get(url).body()
+    }
+
+    /** Скачать зашифрованное превью. */
+    suspend fun downloadThumb(mediaId: String, chatId: String?): ByteArray {
+        val url = buildString {
+            append("$baseMediaUrl/$mediaId/thumb")
+            if (chatId != null) append("?chatId=$chatId")
+        }
+        return client.get(url).body()
+    }
+
+    /** Отправить WS-событие с mediaId. */
+    suspend fun sendMessageWithMediaWS(
+        chatId: String,
+        encryptedContent: String,         // зашифрованная подпись (может быть "")
+        mediaId: String,
+        replyToId: String? = null
+    ): String {
+        val session = wsConnections[chatId]
+        if (session == null || !session.isActive) {
+            throw IllegalStateException("WS not connected for $chatId")
+        }
+
+        val pendingId = CompletableDeferred<String>()
+        pendingMessages[chatId] = pendingId
+
+        val event = WsMessageEvent(
+            message = MessageDto(
+                id               = "",
+                chatId           = chatId,
+                senderId         = "",
+                encryptedContent = encryptedContent,
+                createdAt        = 0
+            ),
+            replyToId = replyToId,
+            mediaId   = mediaId             // отдельное поле в WsMessageEvent
+        )
+        session.send(Frame.Text(AppJson.encodeToString(event)))
+        return withTimeout(15000) { pendingId.await() }
     }
 }

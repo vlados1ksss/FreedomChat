@@ -28,7 +28,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -107,3 +114,63 @@ fun StatusIcon(status: String, size: Dp = 16.dp) {
     }
 }
 
+fun stripMarkdown(text: String): String =
+    text
+        .replace(Regex("""\*\*(.+?)\*\*"""), "$1")
+        .replace(Regex("""_(.+?)_"""),        "$1")
+        .replace(Regex("""~~(.+?)~~"""),       "$1")
+        .replace(Regex("""\|\|(.+?)\|\|"""),  "●●●")  // спойлер — заменяем точками
+
+@Composable
+fun FormattedPreviewText(
+    text: String,
+    style: TextStyle,
+    color: Color,
+    maxLines: Int = 1,
+    modifier: Modifier = Modifier
+) {
+    val annotated = remember(text, color) {
+        buildAnnotatedString {
+            val spoilerColor = color.copy(alpha = 0f)
+            val spoilerBg    = color.copy(alpha = 0.75f)
+
+            val patterns = listOf(
+                "BOLD"    to Regex("""\*\*(.+?)\*\*"""),
+                "ITALIC"  to Regex("""_(.+?)_"""),
+                "STRIKE"  to Regex("""~~(.+?)~~"""),
+                "SPOILER" to Regex("""\|\|(.+?)\|\|""")
+            )
+
+            data class Token(val range: IntRange, val type: String, val inner: String)
+
+            val tokens = patterns
+                .flatMap { (type, rx) -> rx.findAll(text).map { Token(it.range, type, it.groupValues[1]) } }
+                .sortedBy { it.range.first }
+                .fold(emptyList<Token>()) { acc, t ->
+                    if (acc.isNotEmpty() && t.range.first <= acc.last().range.last) acc else acc + t
+                }
+
+            var cursor = 0
+            tokens.forEach { token ->
+                if (token.range.first > cursor) append(text.substring(cursor, token.range.first))
+                when (token.type) {
+                    "BOLD"    -> withStyle(SpanStyle(fontWeight = FontWeight.Bold))              { append(token.inner) }
+                    "ITALIC"  -> withStyle(SpanStyle(fontStyle = FontStyle.Italic))              { append(token.inner) }
+                    "STRIKE"  -> withStyle(SpanStyle(textDecoration = TextDecoration.LineThrough)) { append(token.inner) }
+                    "SPOILER" -> withStyle(SpanStyle(color = spoilerColor, background = spoilerBg)) { append(token.inner) }
+                }
+                cursor = token.range.last + 1
+            }
+            if (cursor < text.length) append(text.substring(cursor))
+        }
+    }
+
+    Text(
+        text     = annotated,
+        style    = style,
+        color    = color,
+        maxLines = maxLines,
+        overflow = TextOverflow.Ellipsis,
+        modifier = modifier
+    )
+}

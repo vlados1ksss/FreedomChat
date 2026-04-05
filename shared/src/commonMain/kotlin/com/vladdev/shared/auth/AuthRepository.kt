@@ -131,7 +131,9 @@ class AuthRepository(
         saveSession(response)
         onSessionCreated?.invoke(true)
     }
-
+    suspend fun isUsernameAvailable(username: String): Result<Boolean> = runCatching {
+        api.checkUsername(username).available
+    }
     suspend fun logout() {
         storage.clear()
         uIdStorage.clear()

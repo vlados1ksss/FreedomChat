@@ -42,7 +42,7 @@ class NotificationHelper(private val context: Context) {
         text: String,
         notificationId: Int
     ) {
-        // Deep link intent — открыть нужный чат
+
         val intent = Intent(context, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
             putExtra("open_chat_id", chatId)
@@ -53,7 +53,7 @@ class NotificationHelper(private val context: Context) {
         )
 
         val notification = NotificationCompat.Builder(context, CHANNEL_ID)
-            .setSmallIcon(R.drawable.ic_message)  // добавь иконку 24dp белую
+            .setSmallIcon(R.drawable.ic_message)
             .setContentTitle(senderUsername)
             .setContentText(text)
             .setStyle(NotificationCompat.BigTextStyle().bigText(text))

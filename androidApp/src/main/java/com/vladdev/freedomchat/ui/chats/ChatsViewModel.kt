@@ -27,6 +27,7 @@ import com.vladdev.shared.chats.IncomingEdit
 import com.vladdev.shared.chats.IncomingHistoryCleared
 import com.vladdev.shared.chats.IncomingMessage
 import com.vladdev.shared.chats.IncomingPin
+import com.vladdev.shared.chats.IncomingReaction
 import com.vladdev.shared.chats.IncomingStatus
 import com.vladdev.shared.chats.IncomingTyping
 import com.vladdev.shared.chats.WsIncomingEvent
@@ -67,7 +68,9 @@ class ChatsViewModel(private val repository: ChatRepository,private val dataStor
     // Muted чаты (chatId -> muted)
     var mutedChatIds by mutableStateOf<Set<String>>(emptySet())
         private set
-
+    // Новое состояние — chatId чатов где пришла реакция на моё сообщение
+    var chatsWithNewReaction by mutableStateOf<Set<String>>(emptySet())
+        private set
     var activeChatId by mutableStateOf<String?>(null)
 
     private var searchJob: Job? = null
@@ -256,6 +259,16 @@ class ChatsViewModel(private val repository: ChatRepository,private val dataStor
                     }
                 }
             }
+            is IncomingReaction -> {
+                // Показываем уведомление только если реакция на моё сообщение,
+                // пришла от собеседника и чат сейчас не открыт
+                if (!event.remove &&
+                    event.userId != currentUserId &&
+                    activeChatId != chatId
+                ) {
+                    chatsWithNewReaction = chatsWithNewReaction + chatId
+                }
+            }
         }
     }
 
@@ -390,11 +403,11 @@ class ChatsViewModel(private val repository: ChatRepository,private val dataStor
 
     fun onChatOpened(chatId: String) {
         activeChatId = chatId
-        // Сразу обнуляем счётчик
         chats = chats.map { chat ->
             if (chat.chatId == chatId) chat.copy(unreadCount = 0)
             else chat
         }
+        chatsWithNewReaction = chatsWithNewReaction - chatId
     }
 
     fun onChatClosed(chatId: String) {

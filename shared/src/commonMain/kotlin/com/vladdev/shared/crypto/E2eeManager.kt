@@ -45,6 +45,35 @@ class E2eeManager(
         )
         return Base64Helper.encode(json.encodeToString(payload).encodeToByteArray())
     }
+    suspend fun encryptMessageWithKey(
+        chatId: String,
+        plaintext: String,
+        theirPublicKeyHex: String
+    ): Pair<String, String> {   // (encryptedPayload, messageKeyHex)
+        val myPrivKey = identityStorage.getPrivateKey() ?: error("No identity private key")
+        val myPubKey  = identityStorage.getPublicKey()  ?: error("No identity public key")
+
+        val state = ratchetStorage.loadState(chatId) ?: run {
+            val sharedSecret = crypto.computeSharedSecret(myPrivKey, theirPublicKeyHex)
+            crypto.initRatchet(sharedSecret, myPubKey, theirPublicKeyHex).also {
+                ratchetStorage.saveState(chatId, it)
+            }
+        }
+
+        val currentIndex = state.sendIndex
+        val (messageKey, newState) = crypto.ratchetEncryptKey(state)
+        ratchetStorage.saveState(chatId, newState)
+
+        val encryptedMsg = crypto.encrypt(plaintext.encodeToByteArray(), messageKey)
+        val payload = EncryptedPayload(
+            ciphertext      = encryptedMsg.ciphertext,
+            nonce           = encryptedMsg.nonce,
+            messageIndex    = currentIndex,
+            senderPublicKey = myPubKey
+        )
+        val encoded = Base64Helper.encode(json.encodeToString(payload).encodeToByteArray())
+        return encoded to messageKey
+    }
     suspend fun saveOutgoingPlaintext(chatId: String, messageId: String, plaintext: String) {
         ratchetStorage.saveOutgoing(chatId, messageId, plaintext)
     }
@@ -90,6 +119,49 @@ class E2eeManager(
         it.printStackTrace()
         null
     }
+    suspend fun decryptMessageWithKey(
+        chatId: String,
+        encryptedContent: String
+    ): Pair<String, String>? {   // (plaintext, messageKeyHex)
+        if (encryptedContent.isBlank()) return null
+
+        val myPrivKey = identityStorage.getPrivateKey() ?: error("No identity private key")
+        val myPubKey  = identityStorage.getPublicKey()  ?: error("No identity public key")
+
+        return runCatching {
+            val payloadBytes = try { Base64Helper.decode(encryptedContent) }
+            catch (e: Exception) { return null }
+            if (payloadBytes.isEmpty()) return null
+
+            val payload = json.decodeFromString<EncryptedPayload>(payloadBytes.decodeToString())
+
+            val state = ratchetStorage.loadState(chatId)?.let { saved ->
+                if (saved.receiveIndex > payload.messageIndex) {
+                    val sharedSecret = crypto.computeSharedSecret(myPrivKey, payload.senderPublicKey)
+                    crypto.initRatchet(sharedSecret, myPubKey, payload.senderPublicKey).also {
+                        ratchetStorage.saveState(chatId, it)
+                    }
+                } else saved
+            } ?: run {
+                val sharedSecret = crypto.computeSharedSecret(myPrivKey, payload.senderPublicKey)
+                crypto.initRatchet(sharedSecret, myPubKey, payload.senderPublicKey).also {
+                    ratchetStorage.saveState(chatId, it)
+                }
+            }
+
+            val (messageKey, newState) = crypto.ratchetDecryptKey(state, payload.messageIndex)
+            ratchetStorage.saveState(chatId, newState)
+
+            val plaintext = crypto.decrypt(
+                EncryptedMessage(payload.ciphertext, payload.nonce), messageKey
+            ).decodeToString()
+
+            plaintext to messageKey
+        }.getOrElse {
+            println("E2EE decryptWithKey error: ${it.message}")
+            null
+        }
+    }
     // E2eeManager
     suspend fun ensureSessionInitialized(chatId: String, theirPublicKeyHex: String) {
         val existing = ratchetStorage.loadState(chatId)
@@ -101,6 +173,12 @@ class E2eeManager(
         val newState     = crypto.initRatchet(sharedSecret, myPubKey, theirPublicKeyHex)
         ratchetStorage.saveState(chatId, newState)
     }
+    // E2eeManager — добавить методы для кэша входящих
+    suspend fun saveIncomingPlaintext(chatId: String, messageId: String, plaintext: String) {
+        ratchetStorage.saveOutgoing(chatId, "in_$messageId", plaintext)
+    }
 
+    suspend fun getIncomingPlaintext(chatId: String, messageId: String): String? =
+        ratchetStorage.loadOutgoing(chatId, "in_$messageId")
     suspend fun resetAllSessions() = ratchetStorage.clearAll()
 }

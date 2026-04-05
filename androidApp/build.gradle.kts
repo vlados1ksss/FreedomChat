@@ -14,8 +14,8 @@ android {
         applicationId = "com.vladdev.freedomchat"
         minSdk = 29
         targetSdk = 36
-        versionCode = 12
-        versionName = "beta-5.0"
+        versionCode = 14
+        versionName = "beta-7.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -56,6 +56,7 @@ dependencies {
     implementation(libs.androidx.compose.material3)
     implementation(libs.androidx.datastore.core)
     implementation(libs.androidx.compose.animation.core)
+    implementation(libs.androidx.compose.foundation)
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
@@ -81,4 +82,9 @@ dependencies {
     implementation("com.google.firebase:firebase-analytics-ktx")
     implementation("androidx.fragment:fragment-ktx:1.6.2")
     implementation("androidx.datastore:datastore-preferences:1.1.7")
+    implementation("io.coil-kt.coil3:coil-compose:3.4.0")
+    implementation("io.coil-kt:coil-video:2.6.0")
+    implementation("androidx.media3:media3-exoplayer:1.3.1")
+    implementation("androidx.media3:media3-ui:1.3.1")
+    implementation("androidx.activity:activity-compose:1.9.0")
 }

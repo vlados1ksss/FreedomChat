@@ -26,7 +26,7 @@ import kotlinx.serialization.InternalSerializationApi
 import kotlinx.serialization.json.Json
 
 class ProfileApi(private val client: HttpClient) {
-    private val baseUrl = "http://176.124.199.31:8080"
+    private val baseUrl = "http://176.124.199.31/api/"
 //    private val baseUrl = "https://6fa43409c383f2.lhr.life"
 
     suspend inline fun <reified T> HttpResponse.safeBody(): T {

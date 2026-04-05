@@ -3,6 +3,7 @@ package com.vladdev.shared.auth
 import com.vladdev.shared.auth.dto.AuthRequest
 import com.vladdev.shared.auth.dto.RegisterRequest
 import com.vladdev.shared.auth.dto.AuthResponse
+import com.vladdev.shared.auth.dto.CheckUsernameResponse
 import com.vladdev.shared.auth.dto.HasDeviceResponse
 import com.vladdev.shared.auth.dto.LoginRequest
 import com.vladdev.shared.auth.dto.PublicKeyResponse
@@ -12,17 +13,16 @@ import com.vladdev.shared.auth.dto.TransferRequest
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
 import io.ktor.client.request.get
+import io.ktor.client.request.parameter
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
 import io.ktor.http.ContentType
 import io.ktor.http.contentType
 import kotlinx.serialization.InternalSerializationApi
 
-// AuthApi.kt
-
 @OptIn(InternalSerializationApi::class)
 class AuthApi(private val client: HttpClient) {
-    private val baseUrl = "http://176.124.199.31:8080"
+    private val baseUrl = "http://176.124.199.31/api/"
 //    private val baseUrl = "https://6fa43409c383f2.lhr.life"
     suspend fun register(
         username: String, name: String, email: String,
@@ -40,6 +40,11 @@ class AuthApi(private val client: HttpClient) {
         client.post("$baseUrl/auth/login") {
             contentType(ContentType.Application.Json)
             setBody(LoginRequest(username, password, publicKey, verifyKey, deviceInfo))
+        }.body()
+
+    suspend fun checkUsername(username: String): CheckUsernameResponse =
+        client.get("$baseUrl/auth/check-username") {
+            parameter("username", username)
         }.body()
 
     suspend fun refresh(refreshToken: String): AuthResponse =

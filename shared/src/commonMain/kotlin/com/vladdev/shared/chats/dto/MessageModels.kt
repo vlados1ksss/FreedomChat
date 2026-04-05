@@ -19,19 +19,56 @@ data class MessageDto(
     val senderId: String,
     val encryptedContent: String,
     val createdAt: Long,
-    val deletedForAll: Boolean = false,
+    val deletedForAll: Boolean         = false,
     val statuses: List<MessageStatusDto> = emptyList(),
-    val plaintextPreview: String? = null,
-    val editedAt: Long? = null,
-    val replyToId: String? = null,
-    val replyToPreview: String? = null,
-    val forwardedFromId: String? = null,
-    val forwardedFromName: String? = null,
-    val pinnedAt: Long? = null
+    val editedAt: Long?                = null,
+    val replyToId: String?             = null,
+    val replyToPreview: String?        = null,   // только локально, @Transient не нужен — сервер просто игнорирует
+    val plaintextPreview: String?      = null,   // локальный кэш, сервер не шлёт
+    val forwardedFromId: String?       = null,
+    val forwardedFromName: String?     = null,
+    val pinnedAt: Long?                = null,
+    val reactions: List<ReactionDto>   = emptyList(),
+    val media: MediaDto?               = null    // НОВОЕ: null = текстовое сообщение
 )
 
-@InternalSerializationApi @Serializable
-data class WsMessageEvent(val type: String = "message", val message: MessageDto, val replyToId: String? = null, val replyToPreview: String? = null)
+@Serializable
+data class ReactionDto(
+    val emoji: String,
+    val userId: String,
+    val createdAt: Long
+)
+
+@Serializable
+data class MediaDto(
+    val id: String,
+    val type: String,              // "PHOTO" | "VIDEO" | "VOICE" | "VIDEO_NOTE"
+    val mimeType: String,
+    val sizeBytes: Long,
+    val durationSec: Int?  = null,
+    val width: Int?        = null,
+    val height: Int?       = null,
+    val thumbUrl: String?  = null, // относительный путь, клиент сам строит полный URL
+    val waveform: List<Float>? = null,
+    val createdAt: Long
+)
+
+@Serializable
+data class MediaUploadResponse(
+    val mediaId: String,
+    val status: String,
+    val thumbUrl: String? = null
+)
+
+@InternalSerializationApi
+@Serializable
+data class WsMessageEvent(
+    val type: String       = "message",
+    val message: MessageDto,
+    val replyToId: String? = null,
+    val replyToPreview: String? = null,
+    val mediaId: String?   = null
+)
 
 @InternalSerializationApi @Serializable
 data class WsStatusEvent(val type: String = "status", val messageId: String, val userId: String, val status: MessageStatus)
@@ -41,6 +78,17 @@ data class WsDeleteEvent(val type: String = "delete", val messageId: String, val
 
 @InternalSerializationApi @Serializable
 data class WsEditEvent(val type: String = "edit", val messageId: String, val senderId: String, val encryptedContent: String, val editedAt: Long?)
+
+@Serializable
+data class WsReactionEvent(
+    val type: String = "reaction",
+    val messageId: String,
+    val emoji: String,
+    val userId: String,
+    val remove: Boolean = false,
+    val createdAt: Long = 0L,
+    val replacedEmoji: String? = null
+)
 
 @Serializable
 data class WsForwardEvent(

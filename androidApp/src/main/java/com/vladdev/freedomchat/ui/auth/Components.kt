@@ -27,6 +27,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -103,28 +104,44 @@ fun AuthTextField(
     modifier: Modifier = Modifier,
     isPassword: Boolean = false,
     error: String? = null,
+    helperText: String? = null, // Текст для "Проверка..." или "Свободно"
+    helperColor: Color = MaterialTheme.colorScheme.onSurfaceVariant,
     placeholder: String = "",
     keyboardType: KeyboardType = KeyboardType.Text,
     prefixText: String? = null
 ) {
-    OutlinedTextField(
-        value = value,
-        onValueChange = onValueChange,
-        label = { Text(label) },
-        prefix = prefixText?.let {
-            { Text(it, color = MaterialTheme.colorScheme.onSurfaceVariant) }
-        },
-        placeholder = if (placeholder.isNotEmpty()) {
-            { Text(placeholder, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)) }
-        } else null,
-        singleLine = true,
-        isError = error != null,
-        supportingText = error?.let { { Text(it, color = MaterialTheme.colorScheme.error) } },
-        visualTransformation = if (isPassword) PasswordVisualTransformation() else VisualTransformation.None,
-        keyboardOptions = KeyboardOptions(keyboardType = keyboardType),
-        shape = RoundedCornerShape(16.dp),
-        modifier = modifier.fillMaxWidth()
-    )
+    Column(modifier = modifier.fillMaxWidth()) {
+        OutlinedTextField(
+            value = value,
+            onValueChange = onValueChange,
+            label = { Text(label) },
+            placeholder = if (placeholder.isNotEmpty()) {
+                { Text(placeholder, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)) }
+            } else null,
+            prefix = prefixText?.let { { Text(it, color = MaterialTheme.colorScheme.onSurfaceVariant) } },
+            singleLine = true,
+            // Теперь isError зависит ТОЛЬКО от наличия ошибки валидации (Regex, длина и т.д.)
+            isError = error != null,
+            visualTransformation = if (isPassword) PasswordVisualTransformation() else VisualTransformation.None,
+            keyboardOptions = KeyboardOptions(keyboardType = keyboardType),
+            shape = RoundedCornerShape(16.dp),
+            modifier = Modifier.fillMaxWidth()
+        )
+
+        // Логика отображения сообщений
+        val messageToShow = error ?: helperText
+        val messageColor = if (error != null) MaterialTheme.colorScheme.error else helperColor
+
+        if (messageToShow != null) {
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = messageToShow,
+                color = messageColor,
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.padding(start = 16.dp)
+            )
+        }
+    }
 }
 
 // ─── PrimaryButton ────────────────────────────────────────────────────────────

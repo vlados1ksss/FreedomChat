@@ -8,6 +8,11 @@ import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
@@ -35,6 +40,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
@@ -52,6 +58,7 @@ import com.google.zxing.PlanarYUVLuminanceSource
 import com.google.zxing.common.HybridBinarizer
 import com.vladdev.freedomchat.MainApplication
 import com.vladdev.freedomchat.R
+import com.vladdev.freedomchat.ui.chats.ErrorBanner
 import java.util.concurrent.Executors
 
 // ─── Welcome ────────────────────────────────────────────────────────────────
@@ -161,6 +168,27 @@ fun LoginStep(vm: AuthViewModel) {
 fun Reg1Step(vm: AuthViewModel) {
     val focusRequester = remember { FocusRequester() }
     LaunchedEffect(Unit) { focusRequester.requestFocus() }
+    val status = vm.usernameStatus
+    val validationError = vm.regUsernameError
+
+    // Определяем статус проверки доступности (только если нет ошибок валидации)
+    val (helper, color) = if (validationError == null) {
+        when(status) {
+            is AuthViewModel.UsernameStatus.Loading ->
+                "Проверка..." to MaterialTheme.colorScheme.outlineVariant
+
+            is AuthViewModel.UsernameStatus.Available ->
+                "Имя пользователя свободно" to MaterialTheme.colorScheme.primary
+
+            is AuthViewModel.UsernameStatus.Taken ->
+                "Такое имя уже занято" to MaterialTheme.colorScheme.error
+
+            else -> null to Color.Unspecified
+        }
+    } else {
+        // Если есть ошибка Regex, мы не показываем статус "Проверка" или "Занято"
+        null to Color.Unspecified
+    }
 
     AuthCard(showBack = true, onBack = vm::goBack) {
 
@@ -174,8 +202,10 @@ fun Reg1Step(vm: AuthViewModel) {
             onValueChange = vm::onRegUsernameChange,
             label = "Имя пользователя (username)",
             prefixText = "@",
-            error = vm.regUsernameError,
-            modifier = Modifier.focusRequester(focusRequester)
+            // Поле будет красным только при ошибке валидации
+            error = validationError,
+            helperText = helper,
+            helperColor = color
         )
 
         Spacer(Modifier.height(12.dp))
@@ -204,7 +234,17 @@ fun Reg1Step(vm: AuthViewModel) {
         PrimaryButton(
             text = "Далее →",
             loading = false,
-            onClick = { if (vm.validateReg1()) vm.navigateTo(AuthScreen.Reg2) }
+            // Блокируем переход, если:
+            // 1. Есть ошибки Regex/валидации
+            // 2. Имя еще не проверено или занято
+            onClick = {
+                val isRegexOk = vm.validateReg1()
+                val isAvailable = status is AuthViewModel.UsernameStatus.Available
+
+                if (isRegexOk && isAvailable) {
+                    vm.navigateTo(AuthScreen.Reg2)
+                }
+            }
         )
     }
 }
@@ -288,6 +328,17 @@ fun Reg3Step(vm: AuthViewModel) {
             loading = vm.isLoading,
             onClick = vm::finishRegister
         )
+
+        AnimatedVisibility(
+            visible = vm.registrationError != null,
+            enter = fadeIn() + expandVertically(),
+            exit = fadeOut() + shrinkVertically()
+        ) {
+            Column {
+                Spacer(Modifier.height(16.dp))
+                ErrorBanner(message = vm.registrationError ?: "")
+            }
+        }
     }
 }
 

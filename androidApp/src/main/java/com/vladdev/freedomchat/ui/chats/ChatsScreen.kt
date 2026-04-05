@@ -100,7 +100,6 @@ fun ChatsScreen(
     onOpenProfile: () -> Unit
 ) {
     val context = LocalContext.current
-// В ChatsScreen добавь:
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
@@ -377,7 +376,8 @@ private fun ChatListItem(
     isMuted: Boolean,
     isMenuExpanded: Boolean,
     onClick: () -> Unit,
-    onLongClick: () -> Unit
+    onLongClick: () -> Unit,
+    hasNewReaction: Boolean = false,
 ) {
     val interactionSource = remember { MutableInteractionSource() }
     val hasUnread = unreadCount > 0
@@ -436,23 +436,48 @@ private fun ChatListItem(
             // Последнее сообщение
             if (lastMessage != null && !lastMessage.deletedForAll) {
                 val isOwn = lastMessage.senderId == currentUserId
+                val previewColor = if (hasUnread && !isOwn)
+                    MaterialTheme.colorScheme.onBackground
+                else
+                    MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f)
+
+                val previewText = remember(lastMessage.id, lastMessage.plaintextPreview, lastMessage.media) {
+                    buildLastMessagePreview(lastMessage, isOwn)
+                }
+
+                if (lastMessage.media != null) {
+                    Text(
+                        text     = previewText,
+                        style    = MaterialTheme.typography.bodySmall.copy(
+                            fontWeight = if (hasUnread && !isOwn) FontWeight.SemiBold else FontWeight.Normal
+                        ),
+                        color    = previewColor,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                } else {
+                    FormattedPreviewText(
+                        text     = previewText,
+                        style    = MaterialTheme.typography.bodySmall.copy(
+                            fontWeight = if (hasUnread && !isOwn) FontWeight.SemiBold else FontWeight.Normal
+                        ),
+                        color    = previewColor,
+                        maxLines = 1
+                    )
+                }
+
+            } else if (lastMessage?.deletedForAll == true) {
                 Text(
-                    text = lastMessage.plaintextPreview ?: "Сообщение недоступно",
-                    style = MaterialTheme.typography.bodySmall.copy(
-                        fontWeight = if (hasUnread && !isOwn) FontWeight.SemiBold else FontWeight.Normal
-                    ),
-                    color = if (hasUnread && !isOwn)
-                        MaterialTheme.colorScheme.onBackground
-                    else
-                        MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
+                    text     = "Сообщение удалено",
+                    style    = MaterialTheme.typography.bodySmall,
+                    color    = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.4f),
+                    maxLines = 1
                 )
             } else {
                 Text(
-                    text = "Нажмите, чтобы открыть чат",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f),
+                    text     = "Нажмите, чтобы открыть чат",
+                    style    = MaterialTheme.typography.bodySmall,
+                    color    = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f),
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
@@ -461,8 +486,6 @@ private fun ChatListItem(
 
         Spacer(Modifier.width(8.dp))
 
-        // Правая часть: время + счётчик
-        // Правая часть: время + статус/счётчик
         Column(
             horizontalAlignment = Alignment.End,
             verticalArrangement = Arrangement.spacedBy(4.dp)
@@ -480,51 +503,73 @@ private fun ChatListItem(
 
             val isOwnLast = lastMessage?.senderId == currentUserId
 
-            when {
-                // Непрочитанные входящие — счётчик
-                hasUnread && !isOwnLast -> {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                // Иконка новой реакции
+                if (hasNewReaction) {
                     Box(
                         modifier = Modifier
-                            .defaultMinSize(minWidth = 20.dp, minHeight = 20.dp)
+                            .size(20.dp)
                             .background(
                                 color = MaterialTheme.colorScheme.primary,
                                 shape = CircleShape
-                            )
-                            .padding(horizontal = 4.dp),
+                            ),
                         contentAlignment = Alignment.Center
                     ) {
-                        Text(
-                            text = if (unreadCount > 99) "99+" else unreadCount.toString(),
-                            style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
-                            color = MaterialTheme.colorScheme.onPrimary
+                        Icon(
+                            painter = painterResource(R.drawable.ic_reaction),
+                            contentDescription = "Новая реакция",
+                            tint = MaterialTheme.colorScheme.onPrimary,
+                            modifier = Modifier.size(12.dp)
                         )
                     }
                 }
 
-                // Исходящее последнее — статус вместо стрелки
-                isOwnLast && lastMessage != null -> {
-                    val statuses = lastMessage.statuses.filter { it.userId != currentUserId }
-                    val isRead = statuses.any { it.status == MessageStatus.READ }
-                    val isDelivered = statuses.any { it.status == MessageStatus.DELIVERED }
-                    val iconRes = when {
-                        isRead      -> R.drawable.ic_read
-                        isDelivered -> R.drawable.ic_read
-                        else        -> R.drawable.ic_sent
+                when {
+                    hasUnread && !isOwnLast -> {
+                        Box(
+                            modifier = Modifier
+                                .defaultMinSize(minWidth = 20.dp, minHeight = 20.dp)
+                                .background(
+                                    color = MaterialTheme.colorScheme.primary,
+                                    shape = CircleShape
+                                )
+                                .padding(horizontal = 4.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = if (unreadCount > 99) "99+" else unreadCount.toString(),
+                                style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                                color = MaterialTheme.colorScheme.onPrimary
+                            )
+                        }
                     }
-                    Icon(
-                        painter = painterResource(iconRes),
-                        contentDescription = null,
-                        tint = if (isRead)
-                            MaterialTheme.colorScheme.primary
-                        else
-                            MaterialTheme.colorScheme.outline,
-                        modifier = Modifier.size(16.dp)
-                    )
-                }
 
-                // Входящее последнее, нет непрочитанных — ничего не показываем
-                else -> {
-                    Spacer(Modifier.size(16.dp))
+                    isOwnLast && lastMessage != null -> {
+                        val statuses = lastMessage.statuses.filter { it.userId != currentUserId }
+                        val isRead = statuses.any { it.status == MessageStatus.READ }
+                        val isDelivered = statuses.any { it.status == MessageStatus.DELIVERED }
+                        val iconRes = when {
+                            isRead      -> R.drawable.ic_read
+                            isDelivered -> R.drawable.ic_read
+                            else        -> R.drawable.ic_sent
+                        }
+                        Icon(
+                            painter = painterResource(iconRes),
+                            contentDescription = null,
+                            tint = if (isRead)
+                                MaterialTheme.colorScheme.primary
+                            else
+                                MaterialTheme.colorScheme.outline,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
+
+                    else -> {
+                        Spacer(Modifier.size(16.dp))
+                    }
                 }
             }
         }
@@ -694,4 +739,32 @@ private fun EmptyChatsPlaceholder() {
             )
         }
     }
+}
+
+fun buildLastMessagePreview(
+    lastMessage: MessageDto,
+    isOwn: Boolean
+): String {
+    val prefix = if (isOwn) "Вы: " else ""
+
+    if (lastMessage.deletedForAll) return "${prefix}Сообщение удалено"
+
+    val mediaLabel: String? = lastMessage.media?.let { media ->
+        val typeLabel = when (media.type.uppercase()) {
+            "PHOTO"      -> "📷 Фото"
+            "VIDEO"      -> "🎥 Видео"
+            "VIDEO_NOTE" -> "📹 Кружок"
+            "VOICE"      -> "🎤 Голосовое"
+            else         -> "Медиа"
+        }
+        // Подпись — это plaintextPreview (расшифрованная подпись)
+        val caption = lastMessage.plaintextPreview
+            ?.takeIf { it.isNotBlank() && it != "\u200B" }
+        if (caption != null) "$typeLabel: $caption" else typeLabel
+    }
+
+    return prefix + (mediaLabel
+        ?: lastMessage.plaintextPreview
+            ?.takeIf { it.isNotBlank() }
+        ?: "Нажмите, чтобы открыть чат")
 }

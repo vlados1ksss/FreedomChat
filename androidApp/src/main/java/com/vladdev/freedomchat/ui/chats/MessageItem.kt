@@ -1,6 +1,7 @@
 package com.vladdev.freedomchat.ui.chats
 
 import android.graphics.drawable.shapes.Shape
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.Spring
@@ -10,6 +11,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.LocalIndication
@@ -22,6 +24,7 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -34,10 +37,13 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.ClickableText
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Divider
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialExpressiveTheme
@@ -45,6 +51,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -64,10 +72,17 @@ import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.LayoutDirection
@@ -77,6 +92,7 @@ import com.vladdev.freedomchat.R
 import com.vladdev.shared.chats.dto.DecryptedMessage
 import com.vladdev.shared.chats.dto.MessageDto
 import com.vladdev.shared.chats.dto.MessageStatus
+import com.vladdev.shared.crypto.MediaKeyCache
 import kotlinx.coroutines.launch
 import kotlinx.serialization.InternalSerializationApi
 import java.time.Instant
@@ -104,8 +120,19 @@ fun MessageItem(
     onForward: (DecryptedMessage) -> Unit,
     onPin: (DecryptedMessage) -> Unit,
     onForwardedAuthorClick: (userId: String?, name: String) -> Unit,
+    onReact: (DecryptedMessage, String) -> Unit,
+    userNames: Map<String, String>,
+    onCopy: (DecryptedMessage) -> Unit,
+    onUsernameClick: (username: String) -> Unit,
+    currentUserNick: String,
+    revealedSpoilersForMessage: Set<Int>,
+    onRevealSpoiler: (Int) -> Unit,
+    onMediaClick: (DecryptedMessage) -> Unit,
 ) {
-    val displayText = message.displayText ?: return
+    val displayText = message.displayText
+    val hasMedia = message.media != null
+    // Если ни текста ни медиа — скрываем
+    if (displayText == null && !hasMedia) return
     val isOwn = message.senderId == currentUserId
     var showMenu by remember { mutableStateOf(false) }
 
@@ -127,7 +154,13 @@ fun MessageItem(
             }
         } else null
     }
-
+    var showEmojiPicker by remember { mutableStateOf(false) }
+    var showReactionPicker by remember { mutableStateOf(false) }
+    var showAllEmojis by remember { mutableStateOf(false) }
+    val uriHandler = LocalUriHandler.current
+    val spoilerState = remember(message.id, revealedSpoilersForMessage) {
+        mutableStateOf(revealedSpoilersForMessage)
+    }
     // Цвет рамки при выборе
     val borderColor = if (isOwn)
         MaterialTheme.colorScheme.primaryContainer
@@ -150,7 +183,9 @@ fun MessageItem(
         MaterialTheme.colorScheme.onSecondaryContainer
 
     val bubbleShape = remember(isOwn, showTail) { messageBubbleShape(isOwn, showTail) }
-
+    LaunchedEffect(revealedSpoilersForMessage) {
+        spoilerState.value = revealedSpoilersForMessage
+    }
     Box(
         modifier = Modifier
             .fillMaxWidth()
@@ -234,14 +269,23 @@ fun MessageItem(
                 else null,
                 modifier = Modifier
                     .widthIn(max = LocalConfiguration.current.screenWidthDp.dp * 0.7f)
-                    .pointerInput(Unit) {
+                    .pointerInput(isMultiSelectMode) {
                         detectTapGestures(
                             onLongPress = {
-                                if (isMultiSelectMode) onSelect(message)
-                                else showMenu = true   // только меню, без выбора
+                                if (!isMultiSelectMode) showMenu = true
                             },
                             onTap = {
-                                if (isMultiSelectMode) onSelect(message)
+                                when {
+                                    isMultiSelectMode      -> onSelect(message)
+                                    showReactionPicker     -> {
+                                        showReactionPicker = false
+                                        showAllEmojis = false
+                                    }
+                                    else                   -> {
+                                        showReactionPicker = true
+                                        showAllEmojis = false
+                                    }
+                                }
                             }
                         )
                     }
@@ -282,12 +326,11 @@ fun MessageItem(
                                         color = replyColor,
                                         fontWeight = FontWeight.SemiBold
                                     )
-                                    Text(
-                                        text = original.text ?: "Сообщение удалено",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = textColor.copy(alpha = 0.7f),
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
+                                    FormattedPreviewText(
+                                        text     = original.text ?: "Сообщение удалено",
+                                        style    = MaterialTheme.typography.bodySmall,
+                                        color    = textColor.copy(alpha = 0.7f),
+                                        maxLines = 1
                                     )
                                 }
                             }
@@ -336,33 +379,56 @@ fun MessageItem(
                             )
                         }
                     }
+                    if (hasMedia) {
+                        MediaContent(
+                            messages       = messages,
+                            currentMessage = message,
+                            mediaGroup     = mediaGroup,
+                            onMediaClick   = { msg, _ -> onMediaClick(msg) },
+                            textColor      = textColor,
+                            modifier       = Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp))
+                        )
+                    }
 
-                    Text(
-                        text = displayText,
-                        color = textColor,
-                        fontStyle = FontStyle.Normal,
-                        style = MaterialTheme.typography.bodyLarge
-                    )
+                    if (displayText != null) {
+                        MessageText(
+                            text             = displayText,
+                            textColor        = textColor,
+                            style            = MaterialTheme.typography.bodyLarge,
+                            onUsernameClick  = { username ->
+                                if (username != currentUserNick) onUsernameClick(username)
+                            },
+                            revealedSpoilers = spoilerState,
+                            onUrlClick       = { url ->
+                                try {
+                                    uriHandler.openUri(if (url.startsWith("http")) url else "https://$url")
+                                } catch (_: Exception) { }
+                            }
+                        )
+                    }
+
+                    LaunchedEffect(spoilerState.value) {
+                        spoilerState.value.forEach { onRevealSpoiler(it) }
+                    }
 
                     Spacer(Modifier.height(2.dp))
                     Row(
                         modifier = Modifier.align(Alignment.End),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        // "изм." курсивом
-                        if (message.pinnedAt != null){
+                        if (message.pinnedAt != null) {
                             Icon(
-                                painter = painterResource(R.drawable.ic_pin),
+                                painter           = painterResource(R.drawable.ic_pin),
                                 contentDescription = null,
-                                modifier = Modifier.size(14.dp),
-                                tint = textColor.copy(alpha = 0.7f)
+                                modifier          = Modifier.size(14.dp),
+                                tint              = textColor.copy(alpha = 0.7f)
                             )
                         }
                         if (message.editedAt != null) {
                             Text(
-                                text = "изм. ",
+                                text  = "изм. ",
                                 style = MaterialTheme.typography.labelSmall.copy(
-                                    fontSize = 10.sp,
+                                    fontSize  = 10.sp,
                                     fontStyle = FontStyle.Italic
                                 ),
                                 color = textColor.copy(alpha = 0.5f)
@@ -374,49 +440,89 @@ fun MessageItem(
                                 .format(DateTimeFormatter.ofPattern("HH:mm"))
                         }
                         Text(
-                            text = timeText,
+                            text  = timeText,
                             style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
                             color = textColor.copy(alpha = 0.6f)
                         )
                         statusIconRes?.let {
                             Spacer(Modifier.width(4.dp))
                             Icon(
-                                painter = painterResource(id = it),
+                                painter           = painterResource(id = it),
                                 contentDescription = null,
-                                modifier = Modifier.size(14.dp),
-                                tint = textColor.copy(alpha = 0.7f)
+                                modifier          = Modifier.size(14.dp),
+                                tint              = textColor.copy(alpha = 0.7f)
+                            )
+                        }
+                    }
+
+                    if (message.reactions.isNotEmpty()) {
+                        Spacer(Modifier.height(6.dp))
+                        Box(
+                            modifier        = Modifier.fillMaxWidth(),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            ReactionPills(
+                                reactions       = message.reactions,
+                                currentUserId   = currentUserId,
+                                userNames       = userNames,
+                                onReactionClick = { emoji -> onReact(message, emoji) },
+                                textColor       = textColor,
+                                bubbleColor     = bubbleColor
                             )
                         }
                     }
                 }
             }
         }
-
-        // Контекстное меню с анимацией
+        // ── Пикер реакций (одиночный тап) ─────────────────────────
         AnimatedVisibility(
-            visible = showMenu,
-            enter = fadeIn(tween(150)) + scaleIn(
-                tween(150),
-                transformOrigin = if (isOwn)
-                    TransformOrigin(1f, 1f)
-                else
-                    TransformOrigin(0f, 1f)
+            visible     = showReactionPicker && !showMenu,
+            enter       = fadeIn(tween(150)) + scaleIn(
+                animationSpec   = tween(150),
+                transformOrigin = if (isOwn) TransformOrigin(1f, 1f) else TransformOrigin(0f, 1f)
             ),
-            exit = fadeOut(tween(100)) + scaleOut(tween(100))
+            exit        = fadeOut(tween(100)) + scaleOut(
+                animationSpec   = tween(100),
+                transformOrigin = if (isOwn) TransformOrigin(1f, 1f) else TransformOrigin(0f, 1f)
+            )
+        ) {
+            ReactionPickerPopup(
+                message       = message,
+                currentUserId = currentUserId,
+                isOwn         = isOwn,
+                onReact       = { emoji ->
+                    showReactionPicker = false
+                    showAllEmojis = false
+                    onReact(message, emoji)
+                },
+                onDismiss     = {
+                    showReactionPicker = false
+                    showAllEmojis = false
+                }
+            )
+        }
+
+// ── Контекстное меню (долгий тап) ─────────────────────────
+        AnimatedVisibility(
+            visible     = showMenu,
+            enter       = fadeIn(tween(150)) + scaleIn(
+                animationSpec   = tween(150),
+                transformOrigin = if (isOwn) TransformOrigin(1f, 1f) else TransformOrigin(0f, 1f)
+            ),
+            exit        = fadeOut(tween(100)) + scaleOut(tween(100))
         ) {
             MessageContextMenu(
-                isOwn = isOwn,
-                onReply = { showMenu = false; onReply(message) },
-                onEdit = { showMenu = false; onEdit(message) },
-                onSelect = {
-                    showMenu = false
-                    onEnterMultiSelect(message)
-                },
-                onDeleteForMe = { showMenu = false; onDelete(message.id, false) },
+                isOwn          = isOwn,
+                hasMedia = hasMedia,
+                onReply        = { showMenu = false; onReply(message) },
+                onEdit         = { showMenu = false; onEdit(message) },
+                onSelect       = { showMenu = false; onEnterMultiSelect(message) },
+                onDeleteForMe  = { showMenu = false; onDelete(message.id, false) },
                 onDeleteForAll = { showMenu = false; onDelete(message.id, true) },
-                onDismiss = { showMenu = false },
-                onForward = { showMenu = false; onForward(message) },
-                onPin = { showMenu = false; onPin(message) },
+                onDismiss      = { showMenu = false },
+                onForward      = { showMenu = false; onForward(message) },
+                onPin          = { showMenu = false; onPin(message) },
+                onCopy         = { showMenu = false; onCopy(message) },
             )
         }
     }
@@ -425,41 +531,53 @@ fun MessageItem(
 @Composable
 fun MessageContextMenu(
     isOwn: Boolean,
+    hasMedia: Boolean,
     onReply: () -> Unit,
     onEdit: () -> Unit,
     onSelect: () -> Unit,
     onForward: () -> Unit,
     onPin: () -> Unit,
+    onCopy: () -> Unit,
     onDeleteForMe: () -> Unit,
     onDeleteForAll: () -> Unit,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
 ) {
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .clickable(indication = null,
-                interactionSource = remember { MutableInteractionSource() }) { onDismiss() }
+            .clickable(
+                indication        = null,
+                interactionSource = remember { MutableInteractionSource() }
+            ) { onDismiss() }
     ) {
         Surface(
-            shape = RoundedCornerShape(16.dp),
-            color = MaterialTheme.colorScheme.surfaceVariant,
+            shape           = RoundedCornerShape(16.dp),
+            color           = MaterialTheme.colorScheme.surfaceVariant,
             shadowElevation = 8.dp,
-            modifier = Modifier
+            modifier        = Modifier
                 .align(if (isOwn) Alignment.TopEnd else Alignment.TopStart)
                 .padding(horizontal = 16.dp)
                 .width(220.dp)
         ) {
             Column(modifier = Modifier.padding(vertical = 8.dp)) {
-                MenuRow(R.drawable.reply,          "Ответить",       onReply)
-                MenuRow(R.drawable.forward,        "Переслать",      onForward)
-                if (isOwn) MenuRow(R.drawable.edit, "Изменить",      onEdit)
-                MenuRow(R.drawable.ic_pin,       "Закрепить",      onPin)
-                MenuRow(R.drawable.select,         "Выбрать",        onSelect)
-                MenuRow(R.drawable.delete,         "Удалить у себя", onDeleteForMe)
-                MenuRow(R.drawable.delete_forever, "Удалить у всех", onDeleteForAll)
+                MenuRow(R.drawable.reply,   "Ответить",       onReply)
+                MenuRow(R.drawable.forward, "Переслать",      onForward)
+                // Копирование только для текстовых сообщений
+                if (!hasMedia) {
+                    MenuRow(R.drawable.content_copy, "Копировать", onCopy)
+                }
+                if (isOwn && !hasMedia) {
+                    MenuRow(R.drawable.edit, "Изменить", onEdit)
+                }
+                MenuRow(R.drawable.ic_pin,        "Закрепить",      onPin)
+                MenuRow(R.drawable.select,        "Выбрать",        onSelect)
+                MenuRow(R.drawable.delete,        "Удалить у себя", onDeleteForMe)
+                MenuRow(R.drawable.delete_forever,"Удалить у всех", onDeleteForAll)
                 MenuRow(
-                    R.drawable.close, "Скрыть", onDismiss,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+                    icon    = R.drawable.close,
+                    label   = "Скрыть",
+                    onClick = onDismiss,
+                    tint    = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
                 )
             }
         }
@@ -511,5 +629,167 @@ private fun messageBubbleShape(isOwn: Boolean, showTail: Boolean): RoundedCorner
             bottomEnd = big
         )
     }
+}
+
+@Composable
+fun MessageText(
+    text: String,
+    textColor: Color,
+    style: TextStyle,
+    onUsernameClick: (String) -> Unit,
+    onUrlClick: (String) -> Unit,
+    revealedSpoilers: MutableState<Set<Int>>  // пробрасываем состояние снаружи
+) {
+    val uriHandler = LocalUriHandler.current
+
+    val usernameRegex = remember { Regex("""@([A-Za-z0-9_]{2,32})""") }
+    val urlRegex      = remember { Regex("""https?://[^\s]+|www\.[^\s]+""") }
+
+    val (mdAnnotated, _) = remember(text, revealedSpoilers.value, textColor) {
+        parseMarkdown(text, textColor, revealedSpoilers.value)
+    }
+
+    // Поверх MD-аннотаций накладываем username/url аннотации
+    val annotated = remember(mdAnnotated, text) {
+        buildAnnotatedString {
+            append(mdAnnotated)
+
+            data class LinkMatch(val range: IntRange, val tag: String, val value: String)
+            val links = (
+                    usernameRegex.findAll(text).map {
+                        LinkMatch(it.range, "USERNAME", it.groupValues[1])
+                    } +
+                            urlRegex.findAll(text).map {
+                                LinkMatch(it.range, "URL", it.value)
+                            }
+                    ).sortedBy { it.range.first }
+
+            // Нужно пересчитать позиции — MD-парсер мог съесть маркеры (**,~~,||)
+            // Поэтому аннотируем по plain-тексту через отдельный проход
+            links.forEach { link ->
+                // Ищем позицию в уже построенной AnnotatedString
+                val plainInAnnotated = mdAnnotated.text.indexOf(
+                    text.substring(link.range).let {
+                        if (link.tag == "USERNAME") it else it
+                    }
+                )
+                if (plainInAnnotated >= 0) {
+                    val end = plainInAnnotated + link.range.count()
+                    addStringAnnotation(
+                        tag   = link.tag,
+                        annotation = link.value,
+                        start = plainInAnnotated,
+                        end   = end.coerceAtMost(mdAnnotated.text.length)
+                    )
+                    addStyle(
+                        SpanStyle(
+                            textDecoration = TextDecoration.Underline,
+                            fontWeight     = FontWeight.Medium
+                        ),
+                        start = plainInAnnotated,
+                        end   = end.coerceAtMost(mdAnnotated.text.length)
+                    )
+                }
+            }
+        }
+    }
+
+    ClickableText(
+        text  = annotated,
+        style = style.copy(color = textColor),
+        onClick = { offset ->
+            // Спойлер
+            annotated.getStringAnnotations("SPOILER", offset, offset)
+                .firstOrNull()?.let { ann ->
+                    val idx = ann.item.toIntOrNull() ?: return@ClickableText
+                    revealedSpoilers.value = revealedSpoilers.value + idx
+                    return@ClickableText
+                }
+            // Username
+            annotated.getStringAnnotations("USERNAME", offset, offset)
+                .firstOrNull()?.let { onUsernameClick(it.item); return@ClickableText }
+            // URL
+            annotated.getStringAnnotations("URL", offset, offset)
+                .firstOrNull()?.let {
+                    try {
+                        uriHandler.openUri(
+                            if (it.item.startsWith("http")) it.item else "https://${it.item}"
+                        )
+                    } catch (_: Exception) {}
+                }
+        }
+    )
+}
+
+// Markdown токены которые поддерживаем
+private val MD_PATTERNS = listOf(
+    "BOLD"      to Regex("""(?<!\*)\*\*(.+?)\*\*(?!\*)"""),
+    "ITALIC"    to Regex("""(?<![_*])_(.+?)_(?![_*])"""),
+    "STRIKE"    to Regex("""~~(.+?)~~"""),
+    "SPOILER"   to Regex("""\|\|(.+?)\|\|""")
+)
+
+fun parseMarkdown(
+    text: String,
+    textColor: Color,
+    revealedSpoilers: Set<Int>  // индексы раскрытых спойлеров
+): Pair<AnnotatedString, List<IntRange>> {  // аннотированный текст + диапазоны спойлеров
+
+    data class Token(val range: IntRange, val type: String, val inner: String)
+
+    // Собираем все совпадения, сортируем по позиции
+    val tokens = MD_PATTERNS
+        .flatMap { (type, regex) ->
+            regex.findAll(text).map { Token(it.range, type, it.groupValues[1]) }
+        }
+        .sortedBy { it.range.first }
+        // Убираем пересекающиеся (берём первый)
+        .fold(emptyList<Token>()) { acc, token ->
+            if (acc.isNotEmpty() && token.range.first <= acc.last().range.last) acc
+            else acc + token
+        }
+
+    val spoilerRanges = mutableListOf<IntRange>()
+    var spoilerIndex  = 0
+
+    val annotated = buildAnnotatedString {
+        var cursor = 0
+        tokens.forEach { token ->
+            // Текст до токена
+            if (token.range.first > cursor) {
+                append(text.substring(cursor, token.range.first))
+            }
+            when (token.type) {
+                "BOLD" -> withStyle(SpanStyle(fontWeight = FontWeight.Bold)) {
+                    append(token.inner)
+                }
+                "ITALIC" -> withStyle(SpanStyle(fontStyle = FontStyle.Italic)) {
+                    append(token.inner)
+                }
+                "STRIKE" -> withStyle(SpanStyle(textDecoration = TextDecoration.LineThrough)) {
+                    append(token.inner)
+                }
+                "SPOILER" -> {
+                    val idx      = spoilerIndex++
+                    val revealed = idx in revealedSpoilers
+                    val start    = length
+                    pushStringAnnotation("SPOILER", idx.toString())
+                    withStyle(
+                        SpanStyle(
+                            color      = if (revealed) textColor
+                            else Color.Transparent,
+                            background = textColor.copy(alpha = if (revealed) 0.15f else 0.85f)
+                        )
+                    ) { append(token.inner) }
+                    pop()
+                    spoilerRanges.add(start until (start + token.inner.length))
+                }
+            }
+            cursor = token.range.last + 1
+        }
+        if (cursor < text.length) append(text.substring(cursor))
+    }
+
+    return annotated to spoilerRanges
 }
 

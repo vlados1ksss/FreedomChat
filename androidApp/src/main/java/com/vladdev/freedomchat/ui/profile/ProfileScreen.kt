@@ -130,7 +130,7 @@ fun ProfileScreen(
                             ) {
                                 Box(contentAlignment = Alignment.Center) {
                                     Text(
-                                        text = profile.name.take(1).uppercase(),
+                                        text = profile.name.take(2).uppercase(),
                                         style = MaterialTheme.typography.headlineLarge,
                                         color = MaterialTheme.colorScheme.onPrimaryContainer
                                     )

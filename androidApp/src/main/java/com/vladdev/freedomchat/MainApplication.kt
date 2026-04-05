@@ -10,8 +10,11 @@ import com.vladdev.shared.auth.AuthApi
 import com.vladdev.shared.auth.AuthRepository
 import com.vladdev.shared.chats.ChatApi
 import com.vladdev.shared.chats.ChatRepository
+import com.vladdev.shared.crypto.AndroidMediaKeyCache
 import com.vladdev.shared.crypto.CryptoManager
 import com.vladdev.shared.crypto.E2eeManager
+import com.vladdev.shared.crypto.MediaCryptoHelper
+import com.vladdev.shared.crypto.MediaKeyCache
 import com.vladdev.shared.network.HttpClientFactory
 import com.vladdev.shared.storage.AndroidIdentityKeyStorage
 import com.vladdev.shared.storage.AndroidRatchetStorage
@@ -38,7 +41,10 @@ class MainApplication : Application() {
     lateinit var e2ee: E2eeManager                          private set
     lateinit var authRepository: AuthRepository             private set
     lateinit var profileApi: ProfileApi            private set
-
+    lateinit var mediaKeyCache: MediaKeyCache
+        private set
+    lateinit var mediaCrypto: MediaCryptoHelper
+        private set
     lateinit var notificationHelper: NotificationHelper
         private set
 
@@ -54,8 +60,11 @@ class MainApplication : Application() {
         userIdStorage   = AndroidUserIdStorage(this)
         identityStorage = AndroidIdentityKeyStorage(this)
         ratchetStorage  = AndroidRatchetStorage(this)
+        val prefs = getSharedPreferences("media_keys", MODE_PRIVATE)
+        mediaKeyCache = AndroidMediaKeyCache(prefs)
         crypto          = CryptoManager()
         e2ee            = E2eeManager(crypto, identityStorage, ratchetStorage)
+        mediaCrypto = MediaCryptoHelper(crypto)
 
         val authClient = HttpClient {
             install(ContentNegotiation) { json() }
@@ -102,7 +111,10 @@ class MainApplication : Application() {
             identityStorage = identityStorage,
             crypto          = crypto,
             e2ee            = e2ee,
-            userIdStorage = userIdStorage
+            userIdStorage   = userIdStorage,
+            mediaCrypto     = mediaCrypto,
+            mediaKeyCache   = mediaKeyCache,
+            cacheDir        = cacheDir
         )
         profileRepository = ProfileRepository(ProfileApi(client), authRepository)
 

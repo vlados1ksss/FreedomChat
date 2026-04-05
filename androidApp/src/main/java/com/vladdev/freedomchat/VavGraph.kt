@@ -268,8 +268,12 @@ fun NavController.openInterlocutorProfile(
     status: String,
     chatId: String? = null
 ) {
+    // Если username пустой — используем name как fallback
+    val safeUsername = username.ifBlank { name }
+    val safeStatus = status.ifBlank { "standard" }
+
     navigate(
         "interlocutor/${Uri.encode(theirUserId)}/${Uri.encode(name)}" +
-                "/${Uri.encode(username)}/${Uri.encode(status)}/${chatId ?: "null"}"
+                "/${Uri.encode(safeUsername)}/${Uri.encode(safeStatus)}/${chatId ?: "null"}"
     )
 }
