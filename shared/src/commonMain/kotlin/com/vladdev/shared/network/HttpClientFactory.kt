@@ -3,6 +3,7 @@ package com.vladdev.shared.network
 import com.vladdev.shared.auth.AuthRepository
 import com.vladdev.shared.storage.TokenStorage
 import io.ktor.client.HttpClient
+import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.plugins.auth.Auth
 import io.ktor.client.plugins.auth.providers.BearerTokens
 import io.ktor.client.plugins.auth.providers.bearer
@@ -39,6 +40,15 @@ object HttpClientFactory {
                 level = LogLevel.ALL
             }
 
+            install(HttpTimeout) {
+                // Для обычных запросов
+                requestTimeoutMillis = 30_000L
+
+                // Для загрузки больших файлов — отдельно через конфиг запроса
+                connectTimeoutMillis = 15_000L
+                socketTimeoutMillis  = 120_000L  // 2 минуты на чтение/запись
+            }
+
             install(Auth) {
                 bearer {
                     loadTokens {
@@ -55,10 +65,6 @@ object HttpClientFactory {
                     }
 
                     refreshTokens {
-                        // markAsRefreshTokenRequest() говорит Ktor что этот запрос
-                        // не нужно перехватывать повторно если он тоже вернёт 401
-//                        markAsRefreshTokenRequest()
-
                         val success = authRepository.refreshTokens()
                         if (!success) {
                             // Сигналим NavGraph что нужно идти на auth

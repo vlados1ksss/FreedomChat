@@ -45,6 +45,7 @@ import com.vladdev.shared.chats.dto.MessageStatusDto
 import com.vladdev.shared.chats.dto.ReactionDto
 import com.vladdev.shared.chats.extensionFromMime
 import com.vladdev.shared.crypto.E2eeManager
+import com.vladdev.shared.crypto.PlatformFile
 import com.vladdev.shared.user.dto.PresenceResponse
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -52,6 +53,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
@@ -61,6 +63,7 @@ import kotlinx.serialization.InternalSerializationApi
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.util.UUID
+import kotlin.coroutines.cancellation.CancellationException
 
 @OptIn(InternalSerializationApi::class)
 class ChatViewModel(
@@ -115,7 +118,7 @@ class ChatViewModel(
         object ChatDeleted : ChatUiEvent()
         object HistoryCleared : ChatUiEvent()
     }
-
+    private var _pendingViewerMessageId: String? = null
     private val _uiEvents = MutableSharedFlow<ChatUiEvent>(extraBufferCapacity = 1)
     val uiEvents: SharedFlow<ChatUiEvent> = _uiEvents.asSharedFlow()
     private var typingClearJob: Job? = null
@@ -144,7 +147,12 @@ class ChatViewModel(
 
     var mediaError by mutableStateOf<String?>(null)
         private set
+    // Прогресс загрузки по tempId
+    private val _uploadProgress = MutableStateFlow<Map<String, Int>>(emptyMap())
+    val uploadProgress: StateFlow<Map<String, Int>> = _uploadProgress.asStateFlow()
 
+    // Джобы отмены по tempId
+    private val uploadJobs = mutableMapOf<String, Job>()
     // Для просмотра медиа
     var mediaViewerMessage by mutableStateOf<DecryptedMessage?>(null)
         private set
@@ -153,10 +161,12 @@ class ChatViewModel(
         if (message.mediaLocalPath != null) {
             mediaViewerMessage = message
         } else {
-            // Инициируем загрузку, потом откроем
+            // Помечаем что после загрузки нужно открыть viewer
+            _pendingViewerMessageId = message.id
             downloadMedia(message)
         }
     }
+
 
     fun closeMediaViewer() { mediaViewerMessage = null }
 
@@ -562,7 +572,18 @@ class ChatViewModel(
     fun deleteMessage(messageId: String, forAll: Boolean) {
         viewModelScope.launch {
             try {
-                repository.deleteMessage(chatId, messageId, forAll)
+                // Ищем mediaId в текущих сообщениях
+                val mediaId = _messages.value
+                    .firstOrNull { it.id == messageId }
+                    ?.media?.id
+                    ?.takeIf { !it.startsWith("optimistic_") }  // не удаляем temp-id
+
+                repository.deleteMessage(
+                    chatId    = chatId,
+                    messageId = messageId,
+                    forAll    = forAll,
+                    mediaId   = if (forAll) mediaId else null
+                )
             } catch (e: Exception) {
                 error = "Не удалось удалить сообщение"
             }
@@ -921,88 +942,107 @@ class ChatViewModel(
         )
     }
 
-    // ChatViewModel.sendMediaMessages — обновлённая версия
+    fun cancelUpload(tempId: String) {
+        uploadJobs[tempId]?.cancel()
+        uploadJobs.remove(tempId)
+        _messages.update { it.filterNot { m -> m.id == tempId } }
+        _uploadProgress.update { it - tempId }
+    }
 
     private fun sendMediaMessages(items: List<MediaPendingItem>, captionText: String) {
-        val context = getApplication<Application>()
-
-        // Группируем все items как одно сообщение с tempId группы
-        val groupTempId = "optimistic_${UUID.randomUUID()}"
+        val context      = getApplication<Application>()
         val mediaGroupId = UUID.randomUUID().toString()
+
         items.forEachIndexed { index, item ->
             val caption = if (index == 0) captionText else ""
+            val tempId  = "optimistic_${UUID.randomUUID()}"
 
-            viewModelScope.launch(Dispatchers.IO) {
-                // Оптимистичный плейсхолдер — DOWNLOADING сразу (идёт upload)
-                val tempId = if (index == 0) groupTempId
-                else "optimistic_${UUID.randomUUID()}"
+            val job = viewModelScope.launch(Dispatchers.IO) {
+
+                // Сохраняем превью на диск сразу — чтобы показать в UI до завершения загрузки
+                val thumbPath: String? = item.thumbBitmap?.let { bmp ->
+                    runCatching {
+                        val thumbFile = File(context.cacheDir, "thumb_preview_${tempId}.jpg")
+                        thumbFile.outputStream().use { out ->
+                            // Сжимаем фото если превышает лимит
+                            val compressed = if (item.type == PendingMediaType.PHOTO) {
+                                compressThumb(bmp)
+                            } else bmp
+                            compressed.compress(Bitmap.CompressFormat.JPEG, 80, out)
+                        }
+                        thumbFile.absolutePath
+                    }.getOrNull()
+                }
 
                 val optimistic = DecryptedMessage(
-                    id         = tempId,
-                    chatId     = chatId,
-                    senderId   = currentUserId ?: "",
-                    text       = caption.ifBlank { null },
-                    createdAt  = System.currentTimeMillis() + index, // разные timestamps
-                    media      = MediaDto(
-                        id        = tempId,
-                        type      = item.type.name,
-                        mimeType  = item.mimeType,
-                        sizeBytes = item.sizeBytes,
-                        createdAt = System.currentTimeMillis()
+                    id           = tempId,
+                    chatId       = chatId,
+                    senderId     = currentUserId ?: "",
+                    text         = caption.ifBlank { null },
+                    createdAt    = System.currentTimeMillis() + index,
+                    media        = MediaDto(
+                        id          = tempId,
+                        type        = item.type.name,
+                        mimeType    = item.mimeType,
+                        sizeBytes   = item.sizeBytes,
+                        durationSec = item.durationMs?.let { (it / 1000).toInt() },
+                        createdAt   = System.currentTimeMillis()
                     ),
-                    mediaState = MediaState.DOWNLOADING, // upload идёт — показываем прогресс
-                    mediaGroupId = mediaGroupId
+                    // Для фото — thumbPath как основной путь для отображения до загрузки
+                    // Для видео — тоже thumbPath (кадр превью)
+                    mediaLocalPath = if (item.type == PendingMediaType.PHOTO) null else thumbPath,
+                    mediaThumbPath = thumbPath,
+                    mediaState     = MediaState.DOWNLOADING,
+                    mediaGroupId   = mediaGroupId
                 )
 
                 withContext(Dispatchers.Main) {
                     _messages.update { listOf(optimistic) + it }
+                    _uploadProgress.update { it + (tempId to 0) }
                 }
 
                 try {
-                    val rawBytes = context.contentResolver
-                        .openInputStream(item.uri)?.readBytes() ?: return@launch
-
-                    val (compressedBytes, finalMime) = compressMedia(rawBytes, item)
-                    val metaJson   = buildMetadataJson(item)
-                    val thumbBytes = item.thumbBitmap?.let { bmp ->
-                        ByteArrayOutputStream().also { out ->
-                            bmp.compress(Bitmap.CompressFormat.JPEG, 80, out)
-                        }.toByteArray()
+                    // Сжимаем фото перед отправкой если нужно (Uri → сжатый файл)
+                    val sourceUri = if (item.type == PendingMediaType.PHOTO &&
+                        item.sizeBytes > PHOTO_MAX_BYTES) {
+                        compressPhotoUri(context, item)   // ← возвращает Uri сжатого файла
+                    } else {
+                        item.uri
                     }
 
-                    repository.sendMediaMessage(
-                        chatId          = chatId,
-                        theirUserId     = theirUserId,
-                        mediaType       = item.type.name,
-                        mimeType        = finalMime,
-                        fileName        = "media_${System.currentTimeMillis()}",
-                        plainFileBytes  = compressedBytes,
-                        plainThumbBytes = thumbBytes,
-                        metadataJson    = metaJson,
-                        caption         = caption,
-                        replyToId       = if (index == 0) replyTo?.id else null,
-                        onUploaded      = { mediaId ->
-                            // Сохраняем расшифрованный файл в кэш сразу
-                            val ext  = extensionFromMime(finalMime)
-                            val file = File(context.cacheDir, "media_${mediaId}.$ext")
-                            if (!file.exists()) file.writeBytes(compressedBytes)
-                            thumbBytes?.let { tb ->
-                                val thumbFile = File(context.cacheDir, "thumb_${mediaId}.jpg")
-                                if (!thumbFile.exists()) thumbFile.writeBytes(tb)
-                            }
-                            // Обновляем плейсхолдер — файл уже на диске, ставим READY
-                            val ext2      = extensionFromMime(finalMime)
-                            val localPath = File(context.cacheDir, "media_${mediaId}.$ext2").absolutePath
+                    repository.sendMediaMessageFromUri(
+                        chatId            = chatId,
+                        theirUserId       = theirUserId,
+                        mediaType         = item.type.name,
+                        mimeType          = if (item.type == PendingMediaType.PHOTO &&
+                            item.sizeBytes > PHOTO_MAX_BYTES) "image/jpeg" else item.mimeType,
+                        fileName          = "media_${System.currentTimeMillis()}.${extensionFromMime(item.mimeType)}",
+                        uri               = sourceUri,
+                        thumbBitmap       = item.thumbBitmap,
+                        metadataJson      = buildMetadataJson(item),
+                        caption           = caption,
+                        replyToId         = if (index == 0) replyTo?.id else null,
+                        context           = context,
+                        onEncryptProgress = { pct ->
                             viewModelScope.launch(Dispatchers.Main) {
+                                _uploadProgress.update { map -> map + (tempId to pct) }
+                            }
+                        },
+                        onUploadProgress  = { pct ->
+                            viewModelScope.launch(Dispatchers.Main) {
+                                _uploadProgress.update { map -> map + (tempId to pct) }
+                            }
+                        },
+                        onUploaded = { mediaId, localPath ->
+                            viewModelScope.launch(Dispatchers.Main) {
+                                _uploadProgress.update { map -> map - tempId }
                                 _messages.update { old ->
                                     old.map { m ->
-                                        if (m.id == tempId)
-                                            m.copy(
-                                                mediaState     = MediaState.READY,
-                                                mediaLocalPath = localPath,
-                                                media          = m.media?.copy(id = mediaId)
-                                            )
-                                        else m
+                                        if (m.id == tempId) m.copy(
+                                            mediaState     = MediaState.READY,
+                                            mediaLocalPath = localPath,
+                                            media          = m.media?.copy(id = mediaId)
+                                        ) else m
                                     }
                                 }
                             }
@@ -1014,13 +1054,79 @@ class ChatViewModel(
                         if (index == 0) replyTo = null
                     }
 
-                } catch (e: Exception) {
+                } catch (e: CancellationException) {
                     withContext(Dispatchers.Main) {
-                        _messages.update { it.filterNot { m -> m.id == tempId } }
+                        _messages.update { list -> list.filterNot { m -> m.id == tempId } }
+                        _uploadProgress.update { map -> map - tempId }
+                    }
+                    // Удаляем временный превью файл
+                    thumbPath?.let { File(it).delete() }
+
+                } catch (e: Exception) {
+                    Log.e("ChatVM", "Media send error", e)
+                    withContext(Dispatchers.Main) {
+                        _messages.update { list -> list.filterNot { m -> m.id == tempId } }
+                        _uploadProgress.update { map -> map - tempId }
                         error = "Не удалось отправить медиа: ${e.message}"
                     }
+                    thumbPath?.let { File(it).delete() }
+
+                } finally {
+                    uploadJobs.remove(tempId)
                 }
             }
+            uploadJobs[tempId] = job
+        }
+    }
+
+    // Сжатие превью до разумного размера для отображения
+    private fun compressThumb(bmp: Bitmap): Bitmap {
+        val maxSide = 400
+        if (bmp.width <= maxSide && bmp.height <= maxSide) return bmp
+        val scale = maxSide.toFloat() / maxOf(bmp.width, bmp.height)
+        return Bitmap.createScaledBitmap(
+            bmp,
+            (bmp.width * scale).toInt(),
+            (bmp.height * scale).toInt(),
+            true
+        )
+    }
+
+    // Сжатие фото перед шифрованием — заменяет старый compressMedia для ByteArray
+// Записывает сжатый файл во временный и возвращает его Uri
+    private suspend fun compressPhotoUri(context: Context, item: MediaPendingItem): Uri {
+        return withContext(Dispatchers.IO) {
+            val bmp = context.contentResolver.openInputStream(item.uri)?.use {
+                BitmapFactory.decodeStream(it)
+            } ?: return@withContext item.uri   // не удалось декодировать — шлём оригинал
+
+            var quality = 85
+            val out     = ByteArrayOutputStream()
+
+            while (quality >= 40) {
+                out.reset()
+                bmp.compress(Bitmap.CompressFormat.JPEG, quality, out)
+                if (out.size() <= PHOTO_MAX_BYTES) break
+                quality -= 10
+            }
+
+            // Если всё равно больше — масштабируем
+            if (out.size() > PHOTO_MAX_BYTES) {
+                val scale = Math.sqrt(PHOTO_MAX_BYTES.toDouble() / out.size()).toFloat()
+                val scaled = Bitmap.createScaledBitmap(
+                    bmp,
+                    (bmp.width * scale).toInt(),
+                    (bmp.height * scale).toInt(),
+                    true
+                )
+                out.reset()
+                scaled.compress(Bitmap.CompressFormat.JPEG, 75, out)
+            }
+
+            // Сохраняем во временный файл и возвращаем его Uri
+            val tempFile = File(context.cacheDir, "compressed_${System.currentTimeMillis()}.jpg")
+            tempFile.writeBytes(out.toByteArray())
+            Uri.fromFile(tempFile)
         }
     }
 
@@ -1070,16 +1176,6 @@ class ChatViewModel(
         return result to "image/jpeg"
     }
 
-    private fun buildMetadataJson(item: MediaPendingItem): String {
-        val parts = mutableListOf<String>()
-        item.thumbBitmap?.let { bmp ->
-            parts += "\"width\":${bmp.width}"
-            parts += "\"height\":${bmp.height}"
-        }
-        item.durationMs?.let { parts += "\"durationSec\":${it / 1000}" }
-        return "{${parts.joinToString(",")}}"
-    }
-
     fun downloadMedia(message: DecryptedMessage) {
         val media = message.media ?: return
 
@@ -1095,7 +1191,8 @@ class ChatViewModel(
                     messageId = message.id,
                     chatId    = chatId,
                     media     = media,
-                    senderId  = message.senderId
+                    senderId  = message.senderId,
+                    context   = getApplication<Application>()
                 )
                 withContext(Dispatchers.Main) {
                     _messages.update { old ->
@@ -1105,12 +1202,17 @@ class ChatViewModel(
                             else m
                         }
                     }
+                    if (_pendingViewerMessageId == message.id) {
+                        _pendingViewerMessageId = null
+                        mediaViewerMessage = _messages.value.firstOrNull { it.id == message.id }
+                    }
                     // Если пользователь уже тапнул и ждёт — открываем viewer
                     if (mediaViewerMessage?.id == message.id) {
                         mediaViewerMessage = _messages.value.firstOrNull { it.id == message.id }
                     }
                 }
             } catch (e: Exception) {
+                Log.e("MediaDecrypt", "downloadMedia FAILED for ${message.id}: ${e.message}", e)
                 withContext(Dispatchers.Main) {
                     updateMediaState(message.id, MediaState.ERROR)
                 }
@@ -1134,5 +1236,37 @@ class ChatViewModel(
             }
         }
     }
+
+    private suspend fun buildMetadataJson(item: MediaPendingItem): String {
+        val context = getApplication<Application>()
+        val parts   = mutableListOf<String>()
+
+        withContext(Dispatchers.IO) {
+            if (item.type == PendingMediaType.VIDEO) {
+                val retriever = MediaMetadataRetriever()
+                runCatching {
+                    retriever.setDataSource(context, item.uri)
+                    val w = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull()
+                    val h = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull()
+                    val d = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull()
+                    w?.let { parts += "\"width\":$it" }
+                    h?.let { parts += "\"height\":$it" }
+                    d?.let { parts += "\"durationSec\":${it / 1000}" }
+                }
+                retriever.release()
+            } else {
+                // Фото — читаем через BitmapFactory.Options без декодирования пикселей
+                val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                context.contentResolver.openInputStream(item.uri)?.use { inp ->
+                    BitmapFactory.decodeStream(inp, null, opts)
+                }
+                opts.outWidth.takeIf  { it > 0 }?.let { parts += "\"width\":$it" }
+                opts.outHeight.takeIf { it > 0 }?.let { parts += "\"height\":$it" }
+            }
+        }
+
+        return "{${parts.joinToString(",")}}"
+    }
+
 
 }

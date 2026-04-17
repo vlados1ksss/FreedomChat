@@ -14,8 +14,8 @@ android {
         applicationId = "com.vladdev.freedomchat"
         minSdk = 29
         targetSdk = 36
-        versionCode = 14
-        versionName = "beta-7.0"
+        versionCode = 17
+        versionName = "alpha-1.8.3"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -87,4 +87,6 @@ dependencies {
     implementation("androidx.media3:media3-exoplayer:1.3.1")
     implementation("androidx.media3:media3-ui:1.3.1")
     implementation("androidx.activity:activity-compose:1.9.0")
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("androidx.graphics:graphics-shapes:1.0.1")
 }

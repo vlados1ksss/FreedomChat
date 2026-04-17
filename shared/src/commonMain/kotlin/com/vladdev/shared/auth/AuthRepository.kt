@@ -1,6 +1,8 @@
 package com.vladdev.shared.auth
 
 import com.vladdev.shared.auth.dto.AuthResponse
+import com.vladdev.shared.auth.dto.CheckUpdateResponse
+import com.vladdev.shared.auth.dto.ConfirmResetRequest
 import com.vladdev.shared.auth.dto.RefreshResult
 import com.vladdev.shared.auth.dto.TransferChallengeResponse
 import com.vladdev.shared.auth.dto.TransferRequest
@@ -19,7 +21,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.InternalSerializationApi
 import kotlin.io.encoding.Base64
 
-// AuthRepository.kt
+
 sealed class LoginResult {
     object SameDevice : LoginResult()
     object NewDevice : LoginResult()
@@ -195,5 +197,33 @@ class AuthRepository(
     private fun String.hexToByteArray(): ByteArray {
         check(length % 2 == 0)
         return ByteArray(length / 2) { i -> substring(i * 2, i * 2 + 2).toInt(16).toByte() }
+    }
+
+    suspend fun requestPasswordReset(username: String, email: String): Result<Unit> = runCatching {
+        api.requestResetCode(username, email)
+    }
+
+    suspend fun verifyResetCode(username: String, email: String, code: String): Result<Boolean> = runCatching {
+        api.verifyResetCode(username, email, code)
+    }
+
+    suspend fun completePasswordReset(
+        username: String,
+        email: String,
+        code: String,
+        newPass: String
+    ): Result<Unit> = runCatching {
+        api.confirmPasswordReset(
+            ConfirmResetRequest(username, email, code, newPass)
+        )
+    }
+
+    suspend fun checkForUpdates(currentVersionCode: Int): Result<CheckUpdateResponse?> = runCatching {
+        val latest = api.checkUpdates()
+        if (latest.versionCode > currentVersionCode) {
+            latest
+        } else {
+            null
+        }
     }
 }

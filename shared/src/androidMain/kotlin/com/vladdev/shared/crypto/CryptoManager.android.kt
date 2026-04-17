@@ -74,8 +74,6 @@ actual class CryptoManager {
     }
     private fun ByteArray.toHexString() = joinToString("") { "%02x".format(it) }
 
-    // expect
-    // expect
     actual fun initRatchet(
         sharedSecretHex: String,
         myPublicKeyHex: String,

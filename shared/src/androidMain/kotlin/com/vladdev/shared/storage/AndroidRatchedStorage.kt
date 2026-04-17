@@ -1,6 +1,7 @@
 package com.vladdev.shared.storage
 
 import android.content.Context
+import android.util.Log
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import com.vladdev.shared.crypto.RatchetStorage
@@ -25,6 +26,8 @@ class AndroidRatchetStorage(context: Context) : RatchetStorage {
     private val json = Json { ignoreUnknownKeys = true }
 
     override suspend fun saveState(chatId: String, state: RatchetState) {
+        Log.d("Ratchet", "saveState chatId=$chatId sendIndex=${state.sendIndex} receiveIndex=${state.receiveIndex}")
+
         prefs.edit()
             .putString("ratchet_$chatId", json.encodeToString(state))
             .apply()
@@ -49,6 +52,17 @@ class AndroidRatchetStorage(context: Context) : RatchetStorage {
 
     override suspend fun loadOutgoing(chatId: String, messageId: String): String? {
         val key = "out_${chatId.replace("-", "")}_${messageId.replace("-", "")}"
+        return prefs.getString(key, null)
+    }
+
+    // AndroidRatchetStorage — реализация
+    override suspend fun saveIncomingPlaintext(chatId: String, messageId: String, plaintext: String) {
+        val key = "in_${chatId.replace("-", "")}_${messageId.replace("-", "")}"
+        prefs.edit().putString(key, plaintext).apply()
+    }
+
+    override suspend fun getIncomingPlaintext(chatId: String, messageId: String): String? {
+        val key = "in_${chatId.replace("-", "")}_${messageId.replace("-", "")}"
         return prefs.getString(key, null)
     }
 }

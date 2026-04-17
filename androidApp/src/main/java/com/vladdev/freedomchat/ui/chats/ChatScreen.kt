@@ -1,6 +1,7 @@
 package com.vladdev.freedomchat.ui.chats
 
 import android.app.Application
+import android.graphics.Bitmap
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
@@ -128,9 +129,12 @@ import com.vladdev.shared.chats.dto.ChatDto
 import com.vladdev.shared.chats.dto.DecryptedMessage
 import com.vladdev.shared.chats.dto.MediaDto
 import com.vladdev.shared.crypto.E2eeManager
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.InternalSerializationApi
+import java.io.File
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -204,11 +208,18 @@ fun ChatScreen(
     var showFormatMenu by remember { mutableStateOf(false) }
     var applyFormat by remember { mutableStateOf<(String, String) -> Unit>({ _, _ -> }) }
     val mediaViewerMessage by remember { derivedStateOf { viewModel.mediaViewerMessage } }
+    val groupedMessages = remember(messages) { groupMessages(messages) }
+    val uploadProgress by viewModel.uploadProgress.collectAsState()
     suspend fun scrollToMessage(messageId: String) {
-        val index = messages.indexOfFirst { it.id == messageId }
+        val index = groupedMessages.indexOfFirst { item ->
+            when (item) {
+                is GroupedItem.Single -> item.message.id == messageId
+                is GroupedItem.Group  -> item.messages.any { it.id == messageId }
+            }
+        }
         if (index != -1) listState.animateScrollToItem(index)
     }
-    val groupedMessages = remember(messages) { groupMessages(messages) }
+
 
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
@@ -285,6 +296,7 @@ fun ChatScreen(
                             label    = authorName,
                             preview  = reply.text ?: "",
                             media    = reply.media,      // передаём — ReplyEditBar сам построит "📷 Фото: подпись"
+                            mediaLocalPath = reply.mediaLocalPath,
                             onCancel = { viewModel.cancelReply() }
                         )
                     }
@@ -293,6 +305,7 @@ fun ChatScreen(
                             label    = "Редактирование",
                             preview  = editing.text ?: "",
                             media    = editing.media,    // аналогично для режима редактирования
+                            mediaLocalPath = editing.mediaLocalPath,
                             onCancel = { viewModel.cancelEdit() }
                         )
                     }
@@ -315,7 +328,7 @@ fun ChatScreen(
                             pendingMedia    = viewModel.pendingMedia,          // НОВОЕ
                             onMediaPicked   = viewModel::onMediaPicked,        // НОВОЕ
                             onMediaRemove   = viewModel::removePendingMedia,   // НОВОЕ
-                            onMediaError    = { viewModel.clearMediaError() }  // НОВОЕ
+                            onMediaError    = { viewModel.clearMediaError() },
                         )
                     }
                 }
@@ -336,63 +349,82 @@ fun ChatScreen(
                     contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
                 ) {
                     itemsIndexed(
-                        items = messages,
-                        key = { _, it -> it.id }
-                    ) { index, message ->
-                        val previousMessage = messages.getOrNull(index - 1)
-                        val nextMessage = messages.getOrNull(index + 1)
-                        val showTail = previousMessage?.senderId != message.senderId
+                        items = groupedMessages,
+                        key   = { _, item -> item.id }
+                    ) { index, groupedItem ->
+
+                        // showTail — смотрим на предыдущий элемент (в reverseLayout = следующий визуально)
+                        val previousItem = groupedMessages.getOrNull(index - 1)
+                        val nextItem     = groupedMessages.getOrNull(index + 1)
+                        val showTail     = previousItem?.senderId != groupedItem.senderId
+
+                        // Достаём DecryptedMessage для общей логики
+                        val message = when (groupedItem) {
+                            is GroupedItem.Single -> groupedItem.message
+                            is GroupedItem.Group  -> groupedItem.lead
+                        }
+                        val mediaGroup = when (groupedItem) {
+                            is GroupedItem.Single -> null
+                            is GroupedItem.Group  -> groupedItem.messages
+                        }
 
                         MessageItem(
-                            message = message,
-                            currentUserId = currentUserId,
-                            messages = messages,
-                            showTail = showTail,
-                            isSelected = selectedMessages.contains(message.id),
-                            isMultiSelectMode = isMultiSelectMode,
-                            onDelete = { id, forAll -> viewModel.deleteMessage(id, forAll) },
-                            onReply = { viewModel.startReply(it) },
-                            onEdit = { viewModel.startEdit(it) },
-                            onSelect = { viewModel.toggleMessageSelection(it.id) },
-                            onEnterMultiSelect = { viewModel.enterMultiSelect(it.id) },
-                            onScrollToMessage = { id -> scope.launch { scrollToMessage(id) } },
+                            message              = message,
+                            currentUserId        = currentUserId,
+                            messages             = messages,
+                            showTail             = showTail,
+                            isSelected           = when (groupedItem) {
+                                is GroupedItem.Single -> selectedMessages.contains(message.id)
+                                is GroupedItem.Group  -> groupedItem.messages.any { selectedMessages.contains(it.id) }
+                            },
+                            isMultiSelectMode    = isMultiSelectMode,
+                            onDelete             = { id, forAll -> viewModel.deleteMessage(id, forAll) },
+                            onReply              = { viewModel.startReply(it) },
+                            onEdit               = { viewModel.startEdit(it) },
+                            onSelect             = { msg ->
+                                when (groupedItem) {
+                                    is GroupedItem.Single -> viewModel.toggleMessageSelection(msg.id)
+                                    // При выборе группы — выбираем все её сообщения
+                                    is GroupedItem.Group  -> groupedItem.messages.forEach {
+                                        if (!selectedMessages.contains(it.id))
+                                            viewModel.toggleMessageSelection(it.id)
+                                    }
+                                }
+                            },
+                            onEnterMultiSelect   = { viewModel.enterMultiSelect(it.id) },
+                            onScrollToMessage    = { id -> scope.launch { scrollToMessage(id) } },
                             interlocutorUsername = interlocutorUsername,
                             interlocutorUserId   = interlocutorUserId,
-                            onForward = { viewModel.startForward(listOf(it)) },
-                            onPin = { viewModel.pinMessage(it) },
+                            onForward            = { msg ->
+                                when (groupedItem) {
+                                    is GroupedItem.Single -> viewModel.startForward(listOf(msg))
+                                    is GroupedItem.Group  -> viewModel.startForward(groupedItem.messages)
+                                }
+                            },
+                            onPin                = { viewModel.pinMessage(it) },
                             onForwardedAuthorClick = { userId, name ->
                                 if (userId != null) {
                                     val participant = availableChats
                                         .flatMap { it.participants }
                                         .firstOrNull { it.userId == userId }
-
                                     if (participant != null) {
-                                        // Участник найден локально
-                                        onOpenInterlocutorProfile(
-                                            userId,
-                                            name,
-                                            participant.username,
-                                            participant.status
-                                        )
+                                        onOpenInterlocutorProfile(userId, name, participant.username, participant.status)
                                     } else {
-                                        // Ищем через API
                                         viewModel.resolveUserAndOpen(userId, name) { uName, uNick, uStatus ->
                                             onOpenInterlocutorProfile(userId, uName, uNick, uStatus)
                                         }
                                     }
                                 }
                             },
-                            userNames = userNames,
-                            onReact   = { msg, emoji -> viewModel.toggleReaction(msg, emoji) },
-                            onCopy = { msg ->
+                            userNames            = userNames,
+                            onReact              = { msg, emoji -> viewModel.toggleReaction(msg, emoji) },
+                            onCopy               = { msg ->
                                 msg.text?.let { clipboardManager.setText(AnnotatedString(it)) }
                             },
-                            onUsernameClick = { username ->
-                                // Ищем среди известных участников
+                            onUsernameClick      = { username ->
                                 val participant = availableChats
                                     .flatMap { it.participants }
                                     .firstOrNull { it.username == username }
-
                                 if (participant != null) {
                                     onOpenInterlocutorProfile(
                                         participant.userId,
@@ -401,27 +433,34 @@ fun ChatScreen(
                                         participant.status
                                     )
                                 } else {
-                                    // Резолвим через API — используем существующий метод
                                     viewModel.resolveUserByUsernameAndOpen(username) { userId, name, nick, status ->
                                         onOpenInterlocutorProfile(userId, name, nick, status)
                                     }
                                 }
                             },
-                            currentUserNick = currentUserNick,
+                            currentUserNick      = currentUserNick,
                             revealedSpoilersForMessage = revealedSpoilers[message.id] ?: emptySet(),
-                            onRevealSpoiler = { idx ->
+                            onRevealSpoiler      = { idx ->
                                 val cur = revealedSpoilers[message.id] ?: emptySet()
                                 revealedSpoilers[message.id] = cur + idx
                             },
-                            onMediaClick = { msg -> viewModel.openMediaViewer(msg) },
+                            onMediaClick         = { msg -> viewModel.openMediaViewer(msg) },
+                            mediaGroup           = mediaGroup,
+                            uploadProgressMap = uploadProgress,
+                            onCancelUpload    = { tempId -> viewModel.cancelUpload(tempId) },
                         )
 
-                        val showSeparator = nextMessage == null || run {
-                            val msgDay = Calendar.getInstance().apply { timeInMillis = message.createdAt }
-                            val nextDay = Calendar.getInstance().apply { timeInMillis = nextMessage.createdAt }
-                            msgDay.get(Calendar.YEAR) != nextDay.get(Calendar.YEAR) || msgDay.get(Calendar.DAY_OF_YEAR) != nextDay.get(Calendar.DAY_OF_YEAR)
+                        // Разделитель по дате — используем createdAt группы
+                        val nextCreatedAt = nextItem?.createdAt
+                        val showSeparator = nextCreatedAt == null || run {
+                            val msgDay  = Calendar.getInstance().apply { timeInMillis = groupedItem.createdAt }
+                            val nextDay = Calendar.getInstance().apply { timeInMillis = nextCreatedAt }
+                            msgDay.get(Calendar.YEAR)        != nextDay.get(Calendar.YEAR) ||
+                                    msgDay.get(Calendar.DAY_OF_YEAR) != nextDay.get(Calendar.DAY_OF_YEAR)
                         }
-                        if (showSeparator) DateSeparator(label = formatDateSeparator(message.createdAt))
+                        if (showSeparator) {
+                            DateSeparator(label = formatDateSeparator(groupedItem.createdAt))
+                        }
                     }
                 }
 
@@ -474,8 +513,9 @@ fun ChatScreen(
         }
         if (mediaViewerMessage != null) {
             MediaViewerScreen(
-                message   = mediaViewerMessage!!,
-                onDismiss = viewModel::closeMediaViewer
+                initialMessage = mediaViewerMessage!!,
+                allMessages    = messages,              // весь список
+                onDismiss      = viewModel::closeMediaViewer
             )
         }
 
@@ -662,26 +702,117 @@ fun PinnedMessagesBar(
 ) {
     if (pinnedMessages.isEmpty()) return
     val displayed = pinnedMessages.getOrNull(currentDisplayIndex) ?: pinnedMessages.first()
-    val label = if (pinnedMessages.size == 1) "Закреплённое сообщение" else "Закреплённые сообщения (${pinnedMessages.size})"
+    val label = if (pinnedMessages.size == 1)
+        "Закреплённое сообщение"
+    else
+        "Закреплённые сообщения (${pinnedMessages.size})"
+
+    // Текст превью с учётом медиа
+    val previewText = when {
+        displayed.media != null && !displayed.text.isNullOrBlank() ->
+            "${mediaTypeLabel(displayed.media!!.type)}: ${displayed.text}"
+        displayed.media != null ->
+            mediaTypeLabel(displayed.media!!.type)
+        else ->
+            displayed.text ?: ""
+    }
 
     Surface(
-        shape = RoundedCornerShape(16.dp),
-        color = MaterialTheme.colorScheme.surfaceContainer,
+        shape           = RoundedCornerShape(16.dp),
+        color           = MaterialTheme.colorScheme.surfaceContainer,
         shadowElevation = 2.dp,
-        modifier = modifier
+        modifier        = modifier
             .fillMaxWidth()
             .padding(horizontal = 12.dp, vertical = 6.dp)
             .clickable { onScrollTo(displayed.id) }
     ) {
-        Row(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-            Box(modifier = Modifier.width(3.dp).height(36.dp).background(MaterialTheme.colorScheme.primary, RoundedCornerShape(2.dp)))
+        Row(
+            modifier          = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier
+                    .width(3.dp).height(36.dp)
+                    .background(MaterialTheme.colorScheme.primary, RoundedCornerShape(2.dp))
+            )
             Spacer(Modifier.width(10.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Text(text = label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
-                Text(text = displayed.text ?: "", style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis, color = MaterialTheme.colorScheme.onSurfaceVariant)
+
+            // Миниатюра закреплённого медиа
+            if (displayed.media != null && displayed.mediaLocalPath != null) {
+                Box(
+                    modifier = Modifier
+                        .size(36.dp)
+                        .clip(RoundedCornerShape(6.dp))
+                ) {
+                    if (displayed.media!!.type.uppercase() == "VIDEO") {
+                        var thumb by remember(displayed.mediaLocalPath) {
+                            mutableStateOf<Bitmap?>(null)
+                        }
+                        LaunchedEffect(displayed.mediaLocalPath) {
+                            thumb = withContext(Dispatchers.IO) {
+                                extractVideoFrame(displayed.mediaLocalPath!!)
+                            }
+                        }
+                        if (thumb != null) {
+                            Image(
+                                bitmap           = thumb!!.asImageBitmap(),
+                                contentDescription = null,
+                                contentScale     = ContentScale.Crop,
+                                modifier         = Modifier.fillMaxSize()
+                            )
+                        } else {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .background(Color.Black.copy(alpha = 0.25f)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    painterResource(R.drawable.ic_video),
+                                    contentDescription = null,
+                                    tint     = Color.White,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            }
+                        }
+                    } else {
+                        AsyncImage(
+                            model              = File(displayed.mediaLocalPath!!),
+                            contentDescription = null,
+                            contentScale       = ContentScale.Crop,
+                            modifier           = Modifier.fillMaxSize()
+                        )
+                    }
+                }
+                Spacer(Modifier.width(10.dp))
             }
-            IconButton(onClick = { onUnpin(displayed.id) }, modifier = Modifier.size(32.dp)) {
-                Icon(painterResource(R.drawable.ic_unpin), contentDescription = null, modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text       = label,
+                    style      = MaterialTheme.typography.labelSmall,
+                    color      = MaterialTheme.colorScheme.primary,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Text(
+                    text     = previewText,
+                    style    = MaterialTheme.typography.bodySmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    color    = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+
+            IconButton(
+                onClick  = { onUnpin(displayed.id) },
+                modifier = Modifier.size(32.dp)
+            ) {
+                Icon(
+                    painterResource(R.drawable.ic_unpin),
+                    contentDescription = null,
+                    modifier           = Modifier.size(16.dp),
+                    tint               = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
         }
     }
@@ -700,7 +831,7 @@ fun ChatInputField(
     onMediaPicked: (List<Uri>) -> Unit,
     onMediaRemove: (String) -> Unit,
     onMediaError: (String) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
 ) {
     var tfValue by remember { mutableStateOf(TextFieldValue(value)) }
 
@@ -1077,15 +1208,14 @@ private fun formatLastSeen(ts: Long, now: Long): String {
 fun ReplyEditBar(
     label: String,
     preview: String,
-    media: MediaDto? = null,    // НОВОЕ: если ответ на медиасообщение
+    media: MediaDto? = null,
+    mediaLocalPath: String? = null,   // ДОБАВИТЬ параметр
     onCancel: () -> Unit
 ) {
     val previewText = when {
-        media != null && preview.isNotBlank() ->
-            "${mediaTypeLabel(media.type)}: $preview"
-        media != null ->
-            mediaTypeLabel(media.type)
-        else -> preview
+        media != null && preview.isNotBlank() -> "${mediaTypeLabel(media.type)}: $preview"
+        media != null                         -> mediaTypeLabel(media.type)
+        else                                  -> preview
     }
 
     Surface(
@@ -1105,16 +1235,51 @@ fun ReplyEditBar(
             )
             Spacer(Modifier.width(12.dp))
 
-            // Миниатюра медиа в ответе
-            if (media != null && media.type == "PHOTO" && media.thumbUrl != null) {
-                AsyncImage(
-                    model                = media.thumbUrl,   // полный URL строится в ViewModel
-                    contentDescription   = null,
-                    contentScale         = ContentScale.Crop,
-                    modifier             = Modifier
+            // Превью медиа — используем localPath вместо thumbUrl
+            if (media != null && mediaLocalPath != null) {
+                Box(
+                    modifier = Modifier
                         .size(36.dp)
                         .clip(RoundedCornerShape(6.dp))
-                )
+                ) {
+                    if (media.type.uppercase() == "VIDEO") {
+                        var thumb by remember(mediaLocalPath) { mutableStateOf<Bitmap?>(null) }
+                        LaunchedEffect(mediaLocalPath) {
+                            thumb = withContext(Dispatchers.IO) {
+                                extractVideoFrame(mediaLocalPath)
+                            }
+                        }
+                        if (thumb != null) {
+                            Image(
+                                bitmap           = thumb!!.asImageBitmap(),
+                                contentDescription = null,
+                                contentScale     = ContentScale.Crop,
+                                modifier         = Modifier.fillMaxSize()
+                            )
+                        } else {
+                            Box(
+                                Modifier
+                                    .fillMaxSize()
+                                    .background(Color.Black.copy(alpha = 0.25f)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    painterResource(R.drawable.ic_video),
+                                    null,
+                                    tint     = Color.White,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                        }
+                    } else {
+                        AsyncImage(
+                            model              = File(mediaLocalPath),
+                            contentDescription = null,
+                            contentScale       = ContentScale.Crop,
+                            modifier           = Modifier.fillMaxSize()
+                        )
+                    }
+                }
                 Spacer(Modifier.width(8.dp))
             }
 
@@ -1124,11 +1289,12 @@ fun ReplyEditBar(
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.primary
                 )
-                FormattedPreviewText(
+                Text(
                     text     = previewText,
                     style    = MaterialTheme.typography.bodySmall,
                     color    = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
             }
             IconButton(onClick = onCancel) {
@@ -1406,17 +1572,39 @@ fun AnimatedTypingText(
         )
     )
 }
-fun groupMessages(messages: List<DecryptedMessage>): List<Any> {
-    val result = mutableListOf<Any>()
+sealed class GroupedItem {
+    data class Single(val message: DecryptedMessage) : GroupedItem()
+    data class Group(
+        val messages: List<DecryptedMessage>,  // уже в правильном порядке: старые → новые
+        val lead: DecryptedMessage
+    ) : GroupedItem()
+
+    // Универсальный доступ к полям для логики showTail / separators
+    val senderId: String get() = when (this) {
+        is Single -> message.senderId
+        is Group  -> lead.senderId
+    }
+    val createdAt: Long get() = when (this) {
+        is Single -> message.createdAt
+        is Group  -> lead.createdAt
+    }
+    val id: String get() = when (this) {
+        is Single -> message.id
+        is Group  -> "group_${lead.id}"
+    }
+}
+
+fun groupMessages(messages: List<DecryptedMessage>): List<GroupedItem> {
+    val result = mutableListOf<GroupedItem>()
     var i = 0
+
     while (i < messages.size) {
         val msg = messages[i]
-        // Начало медиагруппы: есть медиа
+
         if (msg.media != null && !msg.deletedForAll) {
             val group = mutableListOf(msg)
-            // Собираем следующие медиасообщения того же отправителя
-            // в пределах 60 секунд
             var j = i + 1
+
             while (j < messages.size) {
                 val next = messages[j]
                 if (next.senderId == msg.senderId &&
@@ -1428,17 +1616,23 @@ fun groupMessages(messages: List<DecryptedMessage>): List<Any> {
                     j++
                 } else break
             }
+
             if (group.size > 1) {
-                result.add(MessageGroup(leadMessage = group.last(), mediaItems = group))
+                // reverseLayout=true: messages[0] — самое новое, поэтому
+                // переворачиваем чтобы визуально левый/верхний = старший по времени = №1
+                val sorted = group.sortedBy { it.createdAt }
+                val lead   = sorted.firstOrNull { it.text != null } ?: sorted.last()
+                result.add(GroupedItem.Group(messages = sorted, lead = lead))
                 i = j
             } else {
-                result.add(msg)
+                result.add(GroupedItem.Single(msg))
                 i++
             }
         } else {
-            result.add(msg)
+            result.add(GroupedItem.Single(msg))
             i++
         }
     }
+
     return result
 }

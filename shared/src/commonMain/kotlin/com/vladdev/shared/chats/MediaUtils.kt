@@ -1,5 +1,8 @@
 package com.vladdev.shared.chats
 
+import okhttp3.RequestBody
+import okio.BufferedSink
+
 fun extensionFromMime(mime: String): String = when (mime) {
     "image/jpeg"       -> "jpg"
     "image/png"        -> "png"
@@ -26,5 +29,33 @@ fun mediaNotificationPreview(
         "VIDEO_NOTE" -> "📹 Кружок"
         "VOICE"      -> "🎤 Голосовое сообщение"
         else         -> plaintext ?: "Новое сообщение"
+    }
+}
+
+
+class ProgressRequestBody(
+    private val bytes: ByteArray,
+    private val mediaType: okhttp3.MediaType?,
+    private val onProgress: (Int) -> Unit   // 0..100
+) : RequestBody() {
+
+    override fun contentType() = mediaType
+    override fun contentLength() = bytes.size.toLong()
+
+    override fun writeTo(sink: BufferedSink) {
+        val total     = bytes.size.toLong()
+        var uploaded  = 0L
+        val chunkSize = 8192
+
+        var offset = 0
+        while (offset < bytes.size) {
+            val end  = minOf(offset + chunkSize, bytes.size)
+            sink.write(bytes, offset, end - offset)
+            uploaded += (end - offset)
+            offset    = end
+            val pct = ((uploaded * 100) / total).toInt()
+            onProgress(pct)
+        }
+        sink.flush()
     }
 }

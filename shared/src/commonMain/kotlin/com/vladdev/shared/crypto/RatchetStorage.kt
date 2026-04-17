@@ -15,6 +15,9 @@ interface RatchetStorage {
     suspend fun saveOutgoing(chatId: String, messageId: String, plaintext: String)
     suspend fun loadOutgoing(chatId: String, messageId: String): String?
 
+    suspend fun saveIncomingPlaintext(chatId: String, messageId: String, plaintext: String)
+    suspend fun getIncomingPlaintext(chatId: String, messageId: String): String?
+
     // Старые методы — помечаем deprecated, реализуем как no-op
     @Deprecated("Use saveOutgoing(chatId, messageId, plaintext)")
     suspend fun saveOutgoing(chatId: String, index: Int, plaintext: String) { /* no-op */ }

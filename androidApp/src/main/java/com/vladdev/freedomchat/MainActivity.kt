@@ -27,6 +27,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.ContainedLoadingIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
@@ -36,6 +37,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -49,9 +51,11 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import com.vladdev.freedomchat.ui.UpdateBottomSheet
 import com.vladdev.freedomchat.ui.theme.FreedomChatTheme
 import com.vladdev.shared.auth.NetworkDiagnostics
 import com.vladdev.shared.auth.NetworkState
+import com.vladdev.shared.auth.dto.CheckUpdateResponse
 import com.vladdev.shared.auth.dto.RefreshResult
 
 class MainActivity : ComponentActivity() {
@@ -61,9 +65,15 @@ class MainActivity : ComponentActivity() {
         println("Notification permission: $granted")
     }
     private val _openChatId = mutableStateOf<String?>(null)
+    @OptIn(ExperimentalMaterial3Api::class)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val app = application as MainApplication
+        val currentVersionCode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            packageManager.getPackageInfo(packageName, 0).longVersionCode.toInt()
+        } else {
+            packageManager.getPackageInfo(packageName, 0).versionCode
+        }
         _openChatId.value = intent.getStringExtra("open_chat_id")
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -85,6 +95,18 @@ class MainActivity : ComponentActivity() {
             var retryKey by remember { mutableStateOf(0) }
             var startDestination by remember { mutableStateOf<String?>(null) }
             var networkError by remember { mutableStateOf(false) }
+            var updateInfo by remember { mutableStateOf<CheckUpdateResponse?>(null) }
+            var showUpdateSheet by remember { mutableStateOf(false) }
+            val sheetState = rememberModalBottomSheetState()
+
+            LaunchedEffect(Unit) {
+                app.authRepository.checkForUpdates(currentVersionCode).onSuccess { update ->
+                    if (update != null) {
+                        updateInfo = update
+                        showUpdateSheet = true
+                    }
+                }
+            }
 
             LaunchedEffect(retryKey) {
                 startDestination = null
@@ -108,12 +130,30 @@ class MainActivity : ComponentActivity() {
                     }
                 }
             }
+
             val openChatId by _openChatId
             FreedomChatTheme {
-                when {
-                    startDestination == null && !networkError -> SplashScreen()
-                    networkError -> OfflineScreen(onRetry = { retryKey++ })
-                    else -> AppNavGraph(app = app, startDestination = startDestination!!, openChatId = openChatId)
+                Box(modifier = Modifier.fillMaxSize()) {
+                    val context = LocalContext.current
+                    when {
+                        startDestination == null && !networkError -> SplashScreen()
+                        networkError -> OfflineScreen(onRetry = { retryKey++ })
+                        else -> AppNavGraph(
+                            app = app,
+                            startDestination = startDestination!!,
+                            openChatId = openChatId
+                        )
+                    }
+                    if (showUpdateSheet && updateInfo != null) {
+                        UpdateBottomSheet(
+                            versionName = updateInfo!!.version,
+                            onDismiss = { showUpdateSheet = false },
+                            onUpdate = {
+                                context.openUrl("http://176.124.199.31/freedomchat")
+                                startActivity(intent)
+                            }
+                        )
+                    }
                 }
             }
         }

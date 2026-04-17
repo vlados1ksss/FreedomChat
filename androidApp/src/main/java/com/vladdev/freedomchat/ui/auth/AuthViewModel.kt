@@ -71,31 +71,46 @@ class AuthViewModel(
         viewModelScope.launch { isLoggedIn = repository.isLoggedIn() }
     }
 
+    //Reset
+    var resetUsername by mutableStateOf("")
+        private set
+    var resetEmail by mutableStateOf("")
+        private set
+    var resetCode by mutableStateOf("")
+        private set
+    var resetNewPassword by mutableStateOf("")
+        private set
+    var resetNewPasswordConfirm by mutableStateOf("")
+        private set
+    var resetError by mutableStateOf<String?>(null)
+        private set
+    var resetSuccessMessage by mutableStateOf<String?>(null)
+        private set
+
+
     fun navigateTo(target: AuthScreen) { screen = target }
 
     private fun mapServerError(e: Throwable): String {
         val message = e.message ?: ""
         return when {
-            // Ошибки авторизации
             message.contains("Invalid credentials", ignoreCase = true) ->
                 "Неверное имя пользователя или пароль"
 
-            // Ошибки регистрации (согласно логике вашего сервера)
             message.contains("Username or email already exists", ignoreCase = true) ->
                 "Это имя пользователя или почта уже заняты"
 
-            message.contains("Username must be between", ignoreCase = true) ->
-                "Имя пользователя должно быть от 4 до 50 символов"
+            message.contains("Failed to send email", ignoreCase = true) ->
+                "Ошибка отправки письма. Попробуйте позже"
 
-            message.contains("Invalid email", ignoreCase = true) ->
-                "Введите корректный адрес почты"
+            message.contains("Invalid or expired code", ignoreCase = true) ->
+                "Неверный или просроченный код"
 
-            message.contains("Password must be at least", ignoreCase = true) ->
-                "Пароль слишком короткий"
+            // Уточняем сетевые ошибки, чтобы не путать с ошибками логики
+            message.contains("ConnectException") || message.contains("Unable to resolve host") ->
+                "Сервер недоступен. Проверьте соединение."
 
-            // Сетевые проблемы
-            message.contains("ConnectException") || message.contains("timeout") ->
-                "Нет связи с сервером. Проверьте интернет"
+            message.contains("timeout", ignoreCase = true) ->
+                "Превышено время ожидания ответа от сервера."
 
             else -> "Произошла ошибка: ${e.localizedMessage ?: "неизвестная ошибка"}"
         }
@@ -278,6 +293,69 @@ class AuthViewModel(
         object Taken : UsernameStatus()
         data class Error(val message: String) : UsernameStatus()
     }
+
+    //Reset password
+    fun onResetUsernameChange(v: String) { resetUsername = v.trim(); resetError = null }
+    fun onResetEmailChange(v: String) { resetEmail = v.trim(); resetError = null }
+    fun onResetCodeChange(v: String) { if (v.length <= 6) resetCode = v; resetError = null }
+    fun onResetNewPasswordChange(v: String) { resetNewPassword = v; resetError = null }
+    fun onResetNewPasswordConfirmChange(v: String) { resetNewPasswordConfirm = v; resetError = null }
+
+    fun requestResetCode() {
+        if (resetUsername.isBlank() || resetEmail.isBlank()) {
+            resetError = "Заполните все поля"; return
+        }
+        viewModelScope.launch {
+            isLoading = true
+            repository.requestPasswordReset(resetUsername, resetEmail)
+                .onSuccess { navigateTo(AuthScreen.ResetVerify) }
+                .onFailure { resetError = mapServerError(it) }
+            isLoading = false
+        }
+    }
+
+    fun verifyResetCode() {
+        if (resetCode.length < 6) {
+            resetError = "Введите 6-значный код"; return
+        }
+        viewModelScope.launch {
+            isLoading = true
+            repository.verifyResetCode(resetUsername, resetEmail, resetCode)
+                .onSuccess { isValid ->
+                    if (isValid) navigateTo(AuthScreen.ResetConfirm)
+                    else resetError = "Неверный код"
+                }
+                .onFailure { resetError = mapServerError(it) }
+            isLoading = false
+        }
+    }
+
+    fun finalizeReset() {
+        if (resetNewPassword.length < 6) {
+            resetError = "Пароль слишком короткий"; return
+        }
+        if (resetNewPassword != resetNewPasswordConfirm) {
+            resetError = "Пароли не совпадают"; return
+        }
+
+        viewModelScope.launch {
+            isLoading = true
+            repository.completePasswordReset(resetUsername, resetEmail, resetCode, resetNewPassword)
+                .onSuccess {
+                    resetSuccessMessage = "Пароль успешно изменен"
+                    // Очищаем поля и идем на логин
+                    resetUsername = ""; resetEmail = ""; resetCode = ""
+                    resetNewPassword = ""; resetNewPasswordConfirm = ""
+                    navigateTo(AuthScreen.Login)
+                }
+                .onFailure { resetError = mapServerError(it) }
+            isLoading = false
+        }
+    }
+
 }
 
-enum class AuthScreen { Welcome, Login, ScanTransfer, Reg1, Reg2, Reg3 }
+enum class AuthScreen {
+    Welcome, Login, ScanTransfer, Reg1, Reg2, Reg3,
+    ResetRequest, ResetVerify, ResetConfirm
+}

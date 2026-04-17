@@ -20,9 +20,12 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -45,6 +48,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
@@ -123,42 +127,48 @@ fun WelcomeStep(vm: AuthViewModel) {
 
 @Composable
 fun LoginStep(vm: AuthViewModel) {
-    val focusRequester = remember { FocusRequester() }
-    LaunchedEffect(Unit) { focusRequester.requestFocus() }
-
     AuthCard(showBack = true, onBack = vm::goBack) {
+        StepHeader(title = "Добро пожаловать", subtitle = "Введите данные для входа")
 
-        StepHeader(
-            title = "Добро пожаловать",
-            subtitle = "Введите данные для входа"
-        )
+        // Плашка об успехе (после сброса пароля)
+        AnimatedVisibility(visible = vm.resetSuccessMessage != null) {
+            Card(
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
+                modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp)
+            ) {
+                Text(
+                    vm.resetSuccessMessage ?: "",
+                    modifier = Modifier.padding(12.dp),
+                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+        }
 
         AuthTextField(
             value = vm.loginUsername,
             onValueChange = vm::onLoginUsernameChange,
-            label = "Имя пользователя (username)",
+            label = "Имя пользователя",
             prefixText = "@",
-            error = vm.loginError,
-            modifier = Modifier.focusRequester(focusRequester)
+            error = vm.loginError
         )
-
         Spacer(Modifier.height(12.dp))
-
         AuthTextField(
             value = vm.loginPassword,
             onValueChange = vm::onLoginPasswordChange,
             label = "Пароль",
             isPassword = true,
-            error = vm.loginError // показываем ошибку и под паролем
+            error = vm.loginError
         )
 
         Spacer(Modifier.height(24.dp))
+        PrimaryButton(text = "Войти", loading = vm.isLoading, onClick = vm::login)
 
-        PrimaryButton(
-            text = "Войти",
-            loading = vm.isLoading,
-            onClick = vm::login
-        )
+        Spacer(Modifier.height(8.dp))
+        TextButton(
+            onClick = { vm.navigateTo(AuthScreen.ResetRequest) },
+            modifier = Modifier.fillMaxWidth()
+        ) { Text("Забыли пароль?") }
     }
 }
 
@@ -339,6 +349,117 @@ fun Reg3Step(vm: AuthViewModel) {
                 ErrorBanner(message = vm.registrationError ?: "")
             }
         }
+    }
+}
+
+@Composable
+fun ResetRequestStep(vm: AuthViewModel) {
+    AuthCard(showBack = true, onBack = vm::goBack) {
+        StepHeader(title = "Сброс пароля", subtitle = "Введите данные для восстановления")
+
+        AuthTextField(
+            value = vm.resetUsername,
+            onValueChange = vm::onResetUsernameChange,
+            label = "Имя пользователя",
+            prefixText = "@",
+            error = vm.resetError
+        )
+        Spacer(Modifier.height(12.dp))
+        AuthTextField(
+            value = vm.resetEmail,
+            onValueChange = vm::onResetEmailChange,
+            label = "Email",
+            keyboardType = KeyboardType.Email,
+            error = vm.resetError
+        )
+
+        Spacer(Modifier.height(24.dp))
+        PrimaryButton(
+            text = "Получить код",
+            loading = vm.isLoading,
+            onClick = {
+                // Всегда сбрасываем старый код перед запросом
+                vm.onResetCodeChange("")
+                vm.requestResetCode()
+            }
+        )
+    }
+}
+
+@Composable
+fun ResetVerifyStep(vm: AuthViewModel) {
+    AuthCard(showBack = true, onBack = vm::goBack) {
+        StepHeader(
+            title = "Подтверждение",
+            subtitle = "Введите 6 цифр из письма"
+        )
+
+        Spacer(Modifier.height(16.dp))
+
+        OtpTextField(
+            otpText = vm.resetCode,
+            onOtpTextChange = vm::onResetCodeChange,
+            isError = vm.resetError != null
+        )
+
+        AnimatedVisibility(visible = vm.resetError != null) {
+            Text(
+                text = vm.resetError ?: "",
+                color = MaterialTheme.colorScheme.error,
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
+                textAlign = TextAlign.Center
+            )
+        }
+
+        Spacer(Modifier.height(32.dp))
+
+        PrimaryButton(
+            text = "Подтвердить",
+            loading = vm.isLoading,
+            onClick = vm::verifyResetCode,
+            enabled = vm.resetCode.length == 6
+        )
+
+        Spacer(Modifier.height(12.dp))
+
+        TextButton(
+            onClick = vm::requestResetCode,
+            modifier = Modifier.fillMaxWidth(),
+            enabled = !vm.isLoading
+        ) {
+            Text("Отправить код повторно")
+        }
+    }
+}
+
+@Composable
+fun ResetConfirmStep(vm: AuthViewModel) {
+    AuthCard(showBack = true, onBack = vm::goBack) {
+        StepHeader(title = "Новый пароль", subtitle = "Установите новый пароль для аккаунта")
+
+        AuthTextField(
+            value = vm.resetNewPassword,
+            onValueChange = vm::onResetNewPasswordChange,
+            label = "Новый пароль",
+            isPassword = true,
+            error = vm.resetError
+        )
+        Spacer(Modifier.height(12.dp))
+        AuthTextField(
+            value = vm.resetNewPasswordConfirm,
+            onValueChange = vm::onResetNewPasswordConfirmChange,
+            label = "Повторите пароль",
+            isPassword = true,
+            error = if (vm.resetError?.contains("пароли", true) == true) vm.resetError else null
+        )
+
+        Spacer(Modifier.height(24.dp))
+        PrimaryButton(
+            text = "Обновить пароль",
+            loading = vm.isLoading,
+            onClick = vm::finalizeReset
+        )
     }
 }
 

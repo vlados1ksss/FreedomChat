@@ -73,6 +73,7 @@ kotlin {
                 implementation("io.ktor:ktor-client-websockets:2.3.7")
                 implementation("io.ktor:ktor-client-cio:2.3.7")
                 implementation("androidx.security:security-crypto:1.1.0-alpha06")
+
             }
         }
 
@@ -90,7 +91,7 @@ kotlin {
                     exclude(group = "net.java.dev.jna", module = "jna")
                 }
                 implementation("androidx.security:security-crypto:1.1.0-alpha06")
-                implementation("net.java.dev.jna:jna:5.13.0@aar")
+                implementation("net.java.dev.jna:jna:5.14.0@aar")
 
             }
         }

@@ -1,9 +1,6 @@
 package com.vladdev.freedomchat
 
 import android.app.Application
-import android.content.Context
-import androidx.datastore.core.DataStore
-import androidx.datastore.preferences.preferencesDataStore
 import com.google.firebase.messaging.FirebaseMessaging
 import com.vladdev.freedomchat.notifications.NotificationHelper
 import com.vladdev.shared.auth.AuthApi
@@ -26,10 +23,7 @@ import io.ktor.client.HttpClient
 import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.serialization.kotlinx.json.json
-import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
-import java.util.prefs.Preferences
 
 class MainApplication : Application() {
 

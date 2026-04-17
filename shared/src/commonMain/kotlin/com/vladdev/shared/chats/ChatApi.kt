@@ -19,11 +19,13 @@ import com.vladdev.shared.chats.dto.WsPinEvent
 import com.vladdev.shared.chats.dto.WsReactionEvent
 import com.vladdev.shared.chats.dto.WsStatusEvent
 import com.vladdev.shared.chats.dto.WsTypingEvent
+import com.vladdev.shared.crypto.PlatformFile
 import com.vladdev.shared.storage.TokenStorage
 import com.vladdev.shared.user.dto.PresenceResponse
 import com.vladdev.shared.user.dto.UserProfileResponse
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
+import io.ktor.client.plugins.timeout
 import io.ktor.client.plugins.websocket.DefaultClientWebSocketSession
 import io.ktor.client.plugins.websocket.webSocketSession
 import io.ktor.client.request.delete
@@ -46,16 +48,27 @@ import io.ktor.websocket.close
 import io.ktor.websocket.readText
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.InternalSerializationApi
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
+import okhttp3.MultipartBody
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody
+import okhttp3.RequestBody.Companion.toRequestBody
+import okio.BufferedSink
+import java.io.File
+import java.util.concurrent.TimeUnit
 import kotlin.coroutines.cancellation.CancellationException
 
 @OptIn(InternalSerializationApi::class)
@@ -447,51 +460,79 @@ class ChatApi(private val client: HttpClient, private val tokenStorage: TokenSto
 
     suspend fun uploadMedia(
         chatId: String?,
-        type: String,                     // "PHOTO"|"VIDEO"|"VOICE"|"VIDEO_NOTE"|"AVATAR"
+        type: String,
         mimeType: String,
         originalFileName: String,
         encryptedFile: ByteArray,
         encryptedThumb: ByteArray?,
-        metadataJson: String?
-    ): MediaUploadResponse {
-        return client.submitFormWithBinaryData(
-            url = "$baseMediaUrl/upload",
-            formData = formData {
-                append("type",     type)
-                append("mimeType", mimeType)
-                chatId?.let { append("chatId", it) }
-                metadataJson?.let { append("metadata", it) }
+        metadataJson: String?,
+        onProgress: (Int) -> Unit = {},
+        cancellationToken: kotlinx.coroutines.Job? = null
+    ): MediaUploadResponse = withContext(Dispatchers.IO) {
 
-                append(
-                    "file",
-                    encryptedFile,
-                    Headers.build {
-                        append(
-                            HttpHeaders.ContentDisposition,
-                            "form-data; name=\"file\"; filename=\"$originalFileName\"")
-                        append(HttpHeaders.ContentType, "application/octet-stream")
-                    }
-                )
+        val token        = tokenStorage.getAccessToken() ?: throw IllegalStateException("No token")
+        val fileSizeMb   = encryptedFile.size / (1024 * 1024)
+        val timeoutSec   = maxOf(120L, fileSizeMb * 3L)   // минимум 2 мин, +3 сек на MB
 
-                encryptedThumb?.let { thumb ->
-                    append(
-                        "thumb",
-                        thumb,
-                        Headers.build {
-                            append(HttpHeaders.ContentDisposition,
-                                "form-data; name=\"thumb\"; filename=\"thumb_$originalFileName\"")
-                            append(HttpHeaders.ContentType, "application/octet-stream")
-                        }
-                    )
-                }
-            }
-        ).safeBody()
+        val okClient = OkHttpClient.Builder()
+            .connectTimeout(30, TimeUnit.SECONDS)
+            .writeTimeout(timeoutSec, TimeUnit.SECONDS)
+            .readTimeout(timeoutSec, TimeUnit.SECONDS)
+            .callTimeout(timeoutSec + 30, TimeUnit.SECONDS)
+            .build()
+
+        val fileBody = ProgressRequestBody(
+            bytes     = encryptedFile,
+            mediaType = "application/octet-stream".toMediaTypeOrNull(),
+            onProgress = onProgress
+        )
+
+        val builder = MultipartBody.Builder().setType(MultipartBody.FORM)
+            .addFormDataPart("type",     type)
+            .addFormDataPart("mimeType", mimeType)
+
+        chatId?.let          { builder.addFormDataPart("chatId",   it) }
+        metadataJson?.let    { builder.addFormDataPart("metadata", it) }
+
+        builder.addFormDataPart("file", originalFileName, fileBody)
+
+        encryptedThumb?.let { thumb ->
+            builder.addFormDataPart(
+                "thumb",
+                "thumb_$originalFileName",
+                thumb.toRequestBody("application/octet-stream".toMediaTypeOrNull())
+            )
+        }
+
+        val request = Request.Builder()
+            .url("${baseMediaUrl}/upload")
+            .header("Authorization", "Bearer $token")
+            .post(builder.build())
+            .build()
+
+        val call = okClient.newCall(request)
+
+        // Отмена при отмене корутины
+        cancellationToken?.invokeOnCompletion { call.cancel() }
+
+        // Также отменяем если корутина была отменена
+        val job = coroutineContext[kotlinx.coroutines.Job]
+        job?.invokeOnCompletion { if (it != null) call.cancel() }
+
+        val response = call.execute()
+        if (!response.isSuccessful) {
+            throw Exception("Upload failed: ${response.code}")
+        }
+
+        val body = response.body?.string() ?: throw Exception("Empty response")
+        AppJson.decodeFromString<MediaUploadResponse>(body)
     }
     suspend fun downloadMedia(mediaId: String, chatId: String?): ByteArray {
         val url = buildString {
             append("$baseMediaUrl/$mediaId")
             if (chatId != null) append("?chatId=$chatId")
         }
+        println("downloadMedia URL=$url")
         return client.get(url).body()
     }
 
@@ -532,5 +573,85 @@ class ChatApi(private val client: HttpClient, private val tokenStorage: TokenSto
         )
         session.send(Frame.Text(AppJson.encodeToString(event)))
         return withTimeout(15000) { pendingId.await() }
+    }
+
+    suspend fun deleteMedia(mediaId: String) {
+        runCatching {
+            client.delete("$baseMediaUrl/$mediaId")
+        }
+    }
+
+    // ChatApi.kt
+
+    // ChatApi.kt (commonMain)
+    suspend fun uploadMediaFile(
+        chatId: String?,
+        type: String,
+        mimeType: String,
+        originalFileName: String,
+        encryptedFile: PlatformFile,    // ← PlatformFile, не File, не ByteArray
+        encryptedThumb: ByteArray?,
+        metadataJson: String?,
+        onProgress: (Int) -> Unit = {}
+    ): MediaUploadResponse = withContext(Dispatchers.IO) {
+
+        val token      = tokenStorage.getAccessToken() ?: throw IllegalStateException("No token")
+        val fileSize   = encryptedFile.length
+        val fileSizeMb = fileSize / (1024 * 1024)
+        val timeoutSec = maxOf(120L, fileSizeMb * 3L)
+
+        val okClient = OkHttpClient.Builder()
+            .connectTimeout(30, TimeUnit.SECONDS)
+            .writeTimeout(timeoutSec, TimeUnit.SECONDS)
+            .readTimeout(timeoutSec, TimeUnit.SECONDS)
+            .callTimeout(timeoutSec + 30, TimeUnit.SECONDS)
+            .build()
+
+        // RequestBody через readChunked — никакого java.io.File
+        val fileBody = object : RequestBody() {
+            override fun contentType() = "application/octet-stream".toMediaTypeOrNull()
+            override fun contentLength() = fileSize
+            override fun writeTo(sink: BufferedSink) {
+                var written = 0L
+                encryptedFile.readChunked(64 * 1024) { buf, read ->
+                    sink.write(buf, 0, read)
+                    written += read
+                    onProgress(((written * 100) / fileSize).toInt().coerceIn(0, 99))
+                }
+                onProgress(100)
+            }
+        }
+
+        val builder = MultipartBody.Builder().setType(MultipartBody.FORM)
+            .addFormDataPart("type",     type)
+            .addFormDataPart("mimeType", mimeType)
+
+        chatId?.let       { builder.addFormDataPart("chatId",   it) }
+        metadataJson?.let { builder.addFormDataPart("metadata", it) }
+        builder.addFormDataPart("file", originalFileName, fileBody)
+
+        encryptedThumb?.let { thumb ->
+            builder.addFormDataPart(
+                "thumb", "thumb_$originalFileName",
+                thumb.toRequestBody("application/octet-stream".toMediaTypeOrNull())
+            )
+        }
+
+        val request = Request.Builder()
+            .url("$baseMediaUrl/upload")
+            .header("Authorization", "Bearer $token")
+            .post(builder.build())
+            .build()
+
+        val call = okClient.newCall(request)
+        val job  = coroutineContext[kotlinx.coroutines.Job]
+        job?.invokeOnCompletion { if (it != null) call.cancel() }
+
+        val response = call.execute()
+        if (!response.isSuccessful) throw Exception("Upload failed: ${response.code}")
+
+        AppJson.decodeFromString<MediaUploadResponse>(
+            response.body?.string() ?: throw Exception("Empty response")
+        )
     }
 }

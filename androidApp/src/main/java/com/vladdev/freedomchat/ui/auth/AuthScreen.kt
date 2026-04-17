@@ -79,6 +79,9 @@ fun AuthScreen(
                         AuthScreen.Reg1         -> Reg1Step(viewModel)
                         AuthScreen.Reg2         -> Reg2Step(viewModel)
                         AuthScreen.Reg3         -> Reg3Step(viewModel)
+                        AuthScreen.ResetRequest -> ResetRequestStep(viewModel)
+                        AuthScreen.ResetVerify  -> ResetVerifyStep(viewModel)
+                        AuthScreen.ResetConfirm -> ResetConfirmStep(viewModel)
                     }
                 }
             }

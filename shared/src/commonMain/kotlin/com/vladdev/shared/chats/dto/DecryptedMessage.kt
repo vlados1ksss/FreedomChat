@@ -24,8 +24,9 @@ data class DecryptedMessage @OptIn(InternalSerializationApi::class) constructor(
     val media: MediaDto?                = null,
     val mediaGroupId: String? = null,
     // Локальное состояние загрузки/скачивания медиа (не сериализуется)
-    val mediaLocalPath: String?         = null,
-    val mediaState: MediaState          = MediaState.IDLE
+    val mediaLocalPath: String? = null,
+    val mediaThumbPath: String? = null,   // ← локальный путь к превью
+    val mediaState: MediaState = MediaState.IDLE,
 ) {
     val isDeleted     get() = deletedForAll
     val hasMedia      get() = media != null

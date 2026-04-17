@@ -8,12 +8,10 @@ import com.vladdev.shared.chats.dto.MediaDto
 import com.vladdev.shared.chats.dto.MediaState
 import com.vladdev.shared.chats.dto.MessageDto
 import com.vladdev.shared.chats.dto.SearchUserResponse
-import com.vladdev.shared.crypto.Base64Helper
 import com.vladdev.shared.crypto.CryptoManager
 import com.vladdev.shared.crypto.E2eeManager
 import com.vladdev.shared.crypto.MediaCryptoHelper
 import com.vladdev.shared.crypto.MediaKeyCache
-import com.vladdev.shared.crypto.dto.EncryptedPayload
 import com.vladdev.shared.storage.IdentityKeyStorage
 import com.vladdev.shared.storage.UserIdStorage
 import com.vladdev.shared.user.dto.PresenceResponse
@@ -22,8 +20,16 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.serialization.InternalSerializationApi
-import kotlinx.serialization.json.Json
 import java.io.File
+import com.vladdev.shared.crypto.PlatformFile
+import com.vladdev.shared.crypto.copyUriToFile
+import com.vladdev.shared.crypto.encryptThumbFromBitmap
+import com.vladdev.shared.crypto.platformCacheDir
+import com.vladdev.shared.crypto.platformFileFromUri
+import com.vladdev.shared.crypto.platformFileToJavaFile
+import com.vladdev.shared.crypto.platformTempFile
+
+
 
 @OptIn(InternalSerializationApi::class)
 class ChatRepository(
@@ -32,7 +38,7 @@ class ChatRepository(
     private val crypto: CryptoManager,
     private val e2ee: E2eeManager,
     private val userIdStorage: UserIdStorage,
-    private val mediaCrypto: MediaCryptoHelper,
+    val mediaCrypto: MediaCryptoHelper,
     private val mediaKeyCache: MediaKeyCache,
     private val cacheDir: File
 ) {
@@ -68,60 +74,43 @@ class ChatRepository(
 
     suspend fun getMessages(chatId: String, myUserId: String): List<DecryptedMessage> {
         val raw = api.getMessages(chatId)
-        return raw.mapNotNull { msg ->
-            when {
+
+        // Разделяем на свои и чужие
+        // Свои — не трогают рэтчет, берём из storage
+        // Чужие — должны обрабатываться строго по messageIndex
+        val result = mutableListOf<DecryptedMessage>()
+
+        for (msg in raw) {
+            val decrypted = when {
                 msg.deletedForAll -> null
 
-                // НОВОЕ: медиасообщения обрабатываем отдельно — до проверки на blank
                 msg.media != null -> decryptMediaMessage(msg, chatId, myUserId)
 
                 msg.encryptedContent.isBlank() -> null
 
                 msg.senderId == myUserId -> {
                     val plaintext = e2ee.getOutgoingPlaintext(chatId, msg.id)
-                    plaintext?.let {
-                        DecryptedMessage(
-                            id                = msg.id,
-                            chatId            = msg.chatId,
-                            senderId          = msg.senderId,
-                            text              = it,
-                            createdAt         = msg.createdAt,
-                            statuses          = msg.statuses,
-                            editedAt          = msg.editedAt,
-                            replyToId         = msg.replyToId,
-                            replyToSenderId   = null,
-                            forwardedFromId   = msg.forwardedFromId,
-                            forwardedFromName = msg.forwardedFromName,
-                            reactions         = msg.reactions,
-                            pinnedAt          = msg.pinnedAt
-                        )
-                    }
+                    plaintext?.let { buildDecrypted(msg, it) }
                 }
 
                 else -> {
-                    val plaintext = e2ee.decryptMessage(chatId, msg.encryptedContent)
-                    plaintext?.also {
-                        e2ee.saveIncomingPlaintext(chatId, msg.id, it)
-                    }?.let {
-                        DecryptedMessage(
-                            id                = msg.id,
-                            chatId            = msg.chatId,
-                            senderId          = msg.senderId,
-                            text              = it,
-                            createdAt         = msg.createdAt,
-                            statuses          = msg.statuses,
-                            editedAt          = msg.editedAt,
-                            replyToId         = msg.replyToId,
-                            replyToSenderId   = null,
-                            forwardedFromId   = msg.forwardedFromId,
-                            forwardedFromName = msg.forwardedFromName,
-                            reactions         = msg.reactions,
-                            pinnedAt          = msg.pinnedAt
-                        )
+                    // Сначала проверяем — может уже расшифровывали раньше
+                    val cached = e2ee.getIncomingPlaintext(chatId, msg.id)
+                    if (cached != null) {
+                        buildDecrypted(msg, cached)
+                    } else {
+                        // Первый раз — расшифровываем и сохраняем
+                        val plaintext = e2ee.decryptMessage(chatId, msg.encryptedContent)
+                        plaintext?.also {
+                            e2ee.saveIncomingPlaintext(chatId, msg.id, it)
+                        }?.let { buildDecrypted(msg, it) }
                     }
                 }
             }
+            decrypted?.let { result.add(it) }
         }
+
+        return result
     }
 
     suspend fun sendRead(chatId: String, messageId: String, userId: String) {
@@ -340,99 +329,123 @@ class ChatRepository(
         api.sendReactionWS(chatId, messageId, emoji, userId, remove)
     }
 
-    // ChatRepository.kt
+//    suspend fun sendMediaMessage(
+//        chatId: String,
+//        theirUserId: String,
+//        mediaType: String,
+//        mimeType: String,
+//        fileName: String,
+//        plainFilePlatform: PlatformFile,   // ← было: plainFileBytes: ByteArray
+//        plainThumbBytes: ByteArray?,
+//        metadataJson: String?,
+//        caption: String = "",
+//        replyToId: String? = null,
+//        onProgress: (Int) -> Unit = {},
+//        onUploaded: ((mediaId: String) -> Unit)? = null,
+//        context: Any? = null               // нужен на Android для cacheDir
+//    ) {
+//        val theirPublicKey = api.getPublicKey(theirUserId).publicKey
+//        val captionText    = caption.ifBlank { "\u200B" }
+//        val (encryptedCaption, messageKey) = e2ee.encryptMessageWithKey(
+//            chatId            = chatId,
+//            plaintext         = captionText,
+//            theirPublicKeyHex = theirPublicKey
+//        )
+//
+//        // Шифруем файл стримингом во временный файл
+//        val cacheDir   = platformCacheDir(context)
+//        val tempOutput = platformTempFile(cacheDir, "enc_tmp_send_${System.currentTimeMillis()}")
+//
+//        mediaCrypto.encryptFile(          // ← было: mediaCrypto.encryptBytes(...)
+//            input      = plainFilePlatform,
+//            output     = tempOutput,
+//            messageKey = messageKey,
+//            onProgress = { pct ->
+//                // Шифрование: 0..40%
+//                onProgress((pct * 0.4f).toInt())
+//            }
+//        )
+//
+//        // Превью — маленькое, можно в память через encryptThumb
+//        val encryptedThumb = plainThumbBytes?.let {
+//            mediaCrypto.encryptThumb(it, messageKey)
+//        }
+//
+//        val encryptedFile = tempOutput.file
+//            ?: error("PlatformFile missing File after encryption")
+//
+//        val uploadResponse = api.uploadMediaFile(   // ← используем File-версию, не ByteArray
+//            chatId           = chatId,
+//            type             = mediaType,
+//            mimeType         = mimeType,
+//            originalFileName = fileName,
+//            encryptedFile    = encryptedFile,
+//            encryptedThumb   = encryptedThumb,
+//            metadataJson     = metadataJson,
+//            onProgress       = { pct ->
+//                // Upload: 40..99%
+//                onProgress(40 + (pct * 0.6f).toInt())
+//            }
+//        )
+//
+//        encryptedFile.delete()
+//
+//        check(uploadResponse.status == "READY") { "Media upload not ready" }
+//
+//        onUploaded?.invoke(uploadResponse.mediaId)
+//
+//        val messageId = api.sendMessageWithMediaWS(
+//            chatId           = chatId,
+//            encryptedContent = encryptedCaption,
+//            mediaId          = uploadResponse.mediaId,
+//            replyToId        = replyToId
+//        )
+//
+//        if (caption.isNotBlank()) e2ee.saveOutgoingPlaintext(chatId, messageId, caption)
+//        mediaKeyCache.save(chatId, messageId, messageKey)
+//    }
 
-    suspend fun sendMediaMessage(
-        chatId: String,
-        theirUserId: String,
-        mediaType: String,
-        mimeType: String,
-        fileName: String,
-        plainFileBytes: ByteArray,
-        plainThumbBytes: ByteArray?,
-        metadataJson: String?,
-        caption: String = "",
-        replyToId: String? = null,
-        onUploaded: ((mediaId: String) -> Unit)? = null  // НОВОЕ
-    ) {
-        val theirPublicKey = api.getPublicKey(theirUserId).publicKey
-        val captionText    = caption.ifBlank { "\u200B" }
-        val (encryptedCaption, messageKey) = e2ee.encryptMessageWithKey(
-            chatId            = chatId,
-            plaintext         = captionText,
-            theirPublicKeyHex = theirPublicKey
-        )
 
-        val encryptedFile  = mediaCrypto.encryptFile(plainFileBytes, messageKey)
-        val encryptedThumb = plainThumbBytes?.let { mediaCrypto.encryptThumb(it, messageKey) }
-
-        val uploadResponse = api.uploadMedia(
-            chatId           = chatId,
-            type             = mediaType,
-            mimeType         = mimeType,
-            originalFileName = fileName,
-            encryptedFile    = encryptedFile,
-            encryptedThumb   = encryptedThumb,
-            metadataJson     = metadataJson
-        )
-
-        check(uploadResponse.status == "READY") {
-            "Media upload not ready: ${uploadResponse.status}"
-        }
-
-        // Сохраняем в кэш сразу после успешного upload и до WS
-        onUploaded?.invoke(uploadResponse.mediaId)
-
-        val messageId = api.sendMessageWithMediaWS(
-            chatId           = chatId,
-            encryptedContent = encryptedCaption,
-            mediaId          = uploadResponse.mediaId,
-            replyToId        = replyToId
-        )
-
-        if (caption.isNotBlank()) {
-            e2ee.saveOutgoingPlaintext(chatId, messageId, caption)
-        }
-        mediaKeyCache.save(chatId, messageId, messageKey)
-    }
-
-    // ---------------------------------------------------------------
-    // МЕДИА: СКАЧИВАНИЕ И РАСШИФРОВКА
-    // ---------------------------------------------------------------
-
-    /**
-     * Скачать и расшифровать медиафайл.
-     * Сохраняет в кэш-директорию, возвращает путь к файлу.
-     */
     suspend fun downloadAndDecryptMedia(
         messageId: String,
         chatId: String,
         media: MediaDto,
-        senderId: String
+        senderId: String,
+        context: Any? = null    // ← добавить
     ): String {
-        // Сначала проверяем кэш — вдруг уже есть
         cachedMediaPath(media.id, media.mimeType)?.let { return it }
 
         val messageKey = mediaKeyCache.get(chatId, messageId)
             ?: error("No mediaKey cached for message $messageId")
 
+        println( "Downloading media ${media.id} for message $messageId")
+
         val encryptedBlob = api.downloadMedia(media.id, chatId)
-        val plainBytes    = mediaCrypto.decryptFile(encryptedBlob, messageKey)
+        println( "Downloaded ${encryptedBlob.size} bytes")
 
-        val extension = extensionFromMime(media.mimeType)
-        val cacheFile = File(cacheDir, "media_${media.id}.$extension")
-        cacheFile.writeBytes(plainBytes)
+        val extension  = extensionFromMime(media.mimeType)
+        val cacheDir   = platformCacheDir(context)
+        val encTempFile = platformTempFile(cacheDir, "enc_tmp_${media.id}.$extension")
+        val plainFile   = platformTempFile(cacheDir, "media_${media.id}.$extension")
 
-        // Параллельно скачиваем и превью если ещё нет
-        if (media.thumbUrl != null && cachedThumbPath(media.id) == null) {
-            runCatching {
-                val encThumb   = api.downloadThumb(media.id, chatId)
-                val plainThumb = mediaCrypto.decryptThumb(encThumb, messageKey)
-                File(cacheDir, "thumb_${media.id}.jpg").writeBytes(plainThumb)
-            }
+        encTempFile.writeBytes(encryptedBlob)
+        println( "Written encrypted file, size=${encTempFile.length}")
+
+        try {
+            mediaCrypto.decryptFile(
+                input      = encTempFile,
+                output     = plainFile,
+                messageKey = messageKey
+            )
+            println("plainFile path=${plainFile.absolutePath} exists=${plainFile.exists} size=${plainFile.length}")
+            println( "Decrypted OK, plain size=${plainFile.length}")
+        } catch (e: Exception) {
+            println("decryptFile FAILED: ${e.message}")
+            throw e
         }
 
-        return cacheFile.absolutePath
+        encTempFile.delete()
+        return plainFile.absolutePath
     }
 
     suspend fun downloadAndDecryptThumb(
@@ -484,17 +497,32 @@ class ChatRepository(
             isMine -> e2ee.getOutgoingPlaintext(chatId, msg.id)
                 ?.takeIf { it != "\u200B" }
             else -> {
-                val result = e2ee.decryptMessageWithKey(chatId, msg.encryptedContent)
-                if (result != null) {
-                    val (plaintext, messageKey) = result
-                    mediaKeyCache.save(chatId, msg.id, messageKey)
-                    e2ee.saveIncomingPlaintext(chatId, msg.id, plaintext)
-                    plaintext.takeIf { it != "\u200B" }
-                } else null
+                // Сначала проверяем кэш plaintext
+                val cachedPlaintext = e2ee.getIncomingPlaintext(chatId, msg.id)
+                if (cachedPlaintext != null) {
+                    // Plaintext есть — но нужен ещё messageKey для медиа
+                    // Проверяем mediaKeyCache
+                    if (mediaKeyCache.get(chatId, msg.id) == null) {
+                        // Ключа нет — придётся расшифровать снова чтобы получить ключ
+                        val result = e2ee.decryptMessageWithKey(chatId, msg.encryptedContent)
+                        if (result != null) {
+                            mediaKeyCache.save(chatId, msg.id, result.second)
+                        }
+                    }
+                    cachedPlaintext.takeIf { it != "\u200B" }
+                } else {
+                    // Первый раз — расшифровываем
+                    val result = e2ee.decryptMessageWithKey(chatId, msg.encryptedContent)
+                    if (result != null) {
+                        val (plaintext, messageKey) = result
+                        mediaKeyCache.save(chatId, msg.id, messageKey)
+                        e2ee.saveIncomingPlaintext(chatId, msg.id, plaintext)
+                        plaintext.takeIf { it != "\u200B" }
+                    } else null
+                }
             }
         }
 
-        // Проверяем дисковый кэш
         val cachedPath = cachedMediaPath(media.id, media.mimeType)
         val mediaState = if (cachedPath != null) MediaState.READY else MediaState.IDLE
 
@@ -513,7 +541,7 @@ class ChatRepository(
             pinnedAt          = msg.pinnedAt,
             reactions         = msg.reactions,
             media             = media,
-            mediaLocalPath    = cachedPath,   // сразу подставляем если есть
+            mediaLocalPath    = cachedPath,
             mediaState        = mediaState
         )
     }
@@ -578,6 +606,97 @@ class ChatRepository(
             mediaLocalPath    = cachedPath,
             mediaState        = mediaState
         )
+    }
+
+    suspend fun deleteMessage(
+        chatId: String,
+        messageId: String,
+        forAll: Boolean,
+        mediaId: String? = null     // НОВОЕ
+    ) {
+        api.deleteMessageWS(chatId, messageId, forAll)
+        // При удалении у всех — удаляем медиафайл с сервера
+        if (forAll && mediaId != null) {
+            runCatching { api.deleteMedia(mediaId) }
+        }
+    }
+
+    suspend fun sendMediaMessageFromUri(
+        chatId: String,
+        theirUserId: String,
+        mediaType: String,
+        mimeType: String,
+        fileName: String,
+        uri: Any,
+        thumbBitmap: Any?,
+        metadataJson: String?,
+        caption: String = "",
+        replyToId: String? = null,
+        context: Any? = null,
+        onEncryptProgress: (Int) -> Unit = {},
+        onUploadProgress: (Int) -> Unit = {},
+        onUploaded: ((mediaId: String, localPath: String) -> Unit)? = null
+    ) {
+        val theirPublicKey = api.getPublicKey(theirUserId).publicKey
+        val captionText    = caption.ifBlank { "\u200B" }
+        val (encryptedCaption, messageKey) = e2ee.encryptMessageWithKey(
+            chatId            = chatId,
+            plaintext         = captionText,
+            theirPublicKeyHex = theirPublicKey
+        )
+        println("Sent messageKey length=${messageKey.length} value=${messageKey.take(16)}...")
+
+        val cacheDir   = platformCacheDir(context)
+        val tempOutput = platformTempFile(cacheDir, "enc_tmp_send_${System.currentTimeMillis()}")
+
+        // expect/actual — платформенная реализация знает про Uri
+        val inputFile = platformFileFromUri(context, uri)
+
+        mediaCrypto.encryptFile(
+            input      = inputFile,
+            output     = tempOutput,
+            messageKey = messageKey,
+            onProgress = { pct -> onEncryptProgress((pct * 0.4f).toInt()) }
+        )
+
+        // encryptThumb передаём как лямбду — никакого платформенного кода в commonMain
+        val encryptedThumb = encryptThumbFromBitmap(
+            bitmap       = thumbBitmap,
+            messageKey   = messageKey,
+            encryptThumb = mediaCrypto::encryptThumb
+        )
+
+        // platformFileToJavaFile — expect/actual, возвращает java.io.File на Android
+        val uploadResponse = api.uploadMediaFile(
+            chatId           = chatId,
+            type             = mediaType,
+            mimeType         = mimeType,
+            originalFileName = fileName,
+            encryptedFile = tempOutput,
+            encryptedThumb   = encryptedThumb,
+            metadataJson     = metadataJson,
+            onProgress       = { pct -> onUploadProgress(40 + (pct * 0.6f).toInt()) }
+        )
+
+        tempOutput.delete()
+        check(uploadResponse.status == "READY") { "Media upload not ready" }
+
+        val ext       = extensionFromMime(mimeType)
+        val cacheFile = platformTempFile(cacheDir, "media_${uploadResponse.mediaId}.$ext")
+        copyUriToFile(context, uri, cacheFile)  // expect/actual
+
+        mediaKeyCache.save(chatId, "pending_${uploadResponse.mediaId}", messageKey)
+        onUploaded?.invoke(uploadResponse.mediaId, cacheFile.absolutePath)
+
+        val messageId = api.sendMessageWithMediaWS(
+            chatId           = chatId,
+            encryptedContent = encryptedCaption,
+            mediaId          = uploadResponse.mediaId,
+            replyToId        = replyToId
+        )
+
+        if (caption.isNotBlank()) e2ee.saveOutgoingPlaintext(chatId, messageId, caption)
+        mediaKeyCache.save(chatId, messageId, messageKey)
     }
 }
 

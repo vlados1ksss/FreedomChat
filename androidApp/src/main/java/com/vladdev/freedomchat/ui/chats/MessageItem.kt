@@ -1,5 +1,6 @@
 package com.vladdev.freedomchat.ui.chats
 
+import android.graphics.Bitmap
 import android.graphics.drawable.shapes.Shape
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
@@ -14,6 +15,7 @@ import androidx.compose.animation.scaleOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -27,6 +29,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -69,8 +72,10 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Outline
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.res.painterResource
@@ -88,13 +93,17 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import coil3.compose.AsyncImage
 import com.vladdev.freedomchat.R
 import com.vladdev.shared.chats.dto.DecryptedMessage
 import com.vladdev.shared.chats.dto.MessageDto
 import com.vladdev.shared.chats.dto.MessageStatus
 import com.vladdev.shared.crypto.MediaKeyCache
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.InternalSerializationApi
+import java.io.File
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -128,9 +137,12 @@ fun MessageItem(
     revealedSpoilersForMessage: Set<Int>,
     onRevealSpoiler: (Int) -> Unit,
     onMediaClick: (DecryptedMessage) -> Unit,
+    mediaGroup: List<DecryptedMessage>? = null,
+    uploadProgressMap: Map<String, Int> = emptyMap(),
+    onCancelUpload: ((tempId: String) -> Unit)? = null,
 ) {
     val displayText = message.displayText
-    val hasMedia = message.media != null
+    val hasMedia = message.media != null || mediaGroup != null
     // Если ни текста ни медиа — скрываем
     if (displayText == null && !hasMedia) return
     val isOwn = message.senderId == currentUserId
@@ -292,45 +304,116 @@ fun MessageItem(
             ) {
                 Column(
                     modifier = Modifier
-                        .padding(horizontal = 12.dp, vertical = 8.dp)
-                        .padding(bottom = if (showTail) 8.dp else 0.dp)
+                        .padding(
+                            horizontal = if (hasMedia && displayText == null) 4.dp else 12.dp,
+                            vertical   = if (hasMedia && displayText == null) 4.dp else 8.dp
+                        )
+                        .padding(bottom = if (showTail) 4.dp else 0.dp)
                 ) {
                     // Reply preview
                     replyToMessage?.let { original ->
                         val replyAuthorName = when (original.senderId) {
-                            currentUserId    -> "Вы"
+                            currentUserId      -> "Вы"
                             interlocutorUserId -> interlocutorUsername
-                            else             -> "Неизвестно"
+                            else               -> "Неизвестно"
+                        }
+
+                        // Текст превью с учётом медиа
+                        val replyPreviewText = when {
+                            original.media != null && !original.text.isNullOrBlank() ->
+                                "${mediaTypeLabel(original.media!!.type)}: ${original.text}"
+                            original.media != null ->
+                                mediaTypeLabel(original.media!!.type)
+                            original.deletedForAll ->
+                                "Сообщение удалено"
+                            else ->
+                                original.text ?: "Сообщение удалено"
                         }
 
                         Surface(
-                            shape = RoundedCornerShape(8.dp),
-                            color = textColor.copy(alpha = 0.15f),
+                            shape    = RoundedCornerShape(8.dp),
+                            color    = textColor.copy(alpha = 0.15f),
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clickable { onScrollToMessage(original.id) }
                                 .padding(bottom = 6.dp)
                         ) {
-                            Row(modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)) {
+                            Row(
+                                modifier          = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
                                 Box(
                                     modifier = Modifier
                                         .width(3.dp)
                                         .height(40.dp)
-                                        .background(color = replyColor, RoundedCornerShape(2.dp))
+                                        .background(replyColor, RoundedCornerShape(2.dp))
                                 )
                                 Spacer(Modifier.width(8.dp))
-                                Column {
+
+                                // Миниатюра медиа слева — показываем если есть localPath
+                                if (original.media != null && original.mediaLocalPath != null) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(40.dp)
+                                            .clip(RoundedCornerShape(6.dp))
+                                    ) {
+                                        if (original.media!!.type.uppercase() == "VIDEO") {
+                                            // Стоп-кадр для видео
+                                            var thumb by remember(original.mediaLocalPath) {
+                                                mutableStateOf<Bitmap?>(null)
+                                            }
+                                            LaunchedEffect(original.mediaLocalPath) {
+                                                thumb = withContext(Dispatchers.IO) {
+                                                    extractVideoFrame(original.mediaLocalPath!!)
+                                                }
+                                            }
+                                            if (thumb != null) {
+                                                Image(
+                                                    bitmap           = thumb!!.asImageBitmap(),
+                                                    contentDescription = null,
+                                                    contentScale     = ContentScale.Crop,
+                                                    modifier         = Modifier.fillMaxSize()
+                                                )
+                                            } else {
+                                                Box(
+                                                    modifier = Modifier
+                                                        .fillMaxSize()
+                                                        .background(Color.Black.copy(alpha = 0.3f)),
+                                                    contentAlignment = Alignment.Center
+                                                ) {
+                                                    Icon(
+                                                        painter           = painterResource(R.drawable.ic_video),
+                                                        contentDescription = null,
+                                                        tint              = Color.White,
+                                                        modifier          = Modifier.size(18.dp)
+                                                    )
+                                                }
+                                            }
+                                        } else {
+                                            AsyncImage(
+                                                model              = File(original.mediaLocalPath!!),
+                                                contentDescription = null,
+                                                contentScale       = ContentScale.Crop,
+                                                modifier           = Modifier.fillMaxSize()
+                                            )
+                                        }
+                                    }
+                                    Spacer(Modifier.width(8.dp))
+                                }
+
+                                Column(modifier = Modifier.weight(1f)) {
                                     Text(
-                                        text = replyAuthorName,
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = replyColor,
+                                        text       = replyAuthorName,
+                                        style      = MaterialTheme.typography.labelSmall,
+                                        color      = replyColor,
                                         fontWeight = FontWeight.SemiBold
                                     )
-                                    FormattedPreviewText(
-                                        text     = original.text ?: "Сообщение удалено",
+                                    Text(
+                                        text     = replyPreviewText,
                                         style    = MaterialTheme.typography.bodySmall,
                                         color    = textColor.copy(alpha = 0.7f),
-                                        maxLines = 1
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
                                     )
                                 }
                             }
@@ -379,15 +462,38 @@ fun MessageItem(
                             )
                         }
                     }
+                    // MessageItem.kt — блок одиночного медиа
+
                     if (hasMedia) {
-                        MediaContent(
-                            messages       = messages,
-                            currentMessage = message,
-                            mediaGroup     = mediaGroup,
-                            onMediaClick   = { msg, _ -> onMediaClick(msg) },
-                            textColor      = textColor,
-                            modifier       = Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp))
-                        )
+                        val groupToShow = mediaGroup ?: message.media?.let { listOf(message) }
+                        if (groupToShow != null) {
+                            val mediaModifier = Modifier
+                                .fillMaxWidth()
+                                .padding(bottom = if (displayText != null) 6.dp else 0.dp)
+
+                            if (groupToShow.size > 1) {
+                                MediaCollageGrid(
+                                    mediaMessages     = groupToShow,
+                                    onMediaClick      = { msg -> onMediaClick(msg) },
+                                    uploadProgressMap = uploadProgressMap,
+                                    onCancelUpload    = onCancelUpload,
+                                    modifier          = mediaModifier
+                                )
+                            } else {
+                                val singleMsg = groupToShow.first()
+                                val singleMedia = singleMsg.media
+                                val ratio       = smartAspectRatio(singleMedia)
+                                Box(modifier = mediaModifier.aspectRatio(ratio).clip(RoundedCornerShape(8.dp))
+                                    .clickable { onMediaClick(singleMsg) }
+                                ) {
+                                    MediaThumbContent(
+                                        message        = singleMsg,
+                                        uploadProgress = uploadProgressMap[singleMsg.id],
+                                        onCancelUpload = onCancelUpload?.let { { it(singleMsg.id) } }
+                                    )
+                                }
+                            }
+                        }
                     }
 
                     if (displayText != null) {
@@ -561,8 +667,9 @@ fun MessageContextMenu(
         ) {
             Column(modifier = Modifier.padding(vertical = 8.dp)) {
                 MenuRow(R.drawable.reply,   "Ответить",       onReply)
-                MenuRow(R.drawable.forward, "Переслать",      onForward)
-                // Копирование только для текстовых сообщений
+                if (!hasMedia) {
+                    MenuRow(R.drawable.forward, "Переслать", onForward)
+                }
                 if (!hasMedia) {
                     MenuRow(R.drawable.content_copy, "Копировать", onCopy)
                 }
