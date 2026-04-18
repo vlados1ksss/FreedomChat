@@ -1,37 +1,91 @@
 package com.vladdev.shared.auth
 
 import com.vladdev.shared.auth.dto.AuthRequest
+import com.vladdev.shared.auth.dto.RegisterRequest
 import com.vladdev.shared.auth.dto.AuthResponse
+import com.vladdev.shared.auth.dto.CheckUpdateResponse
+import com.vladdev.shared.auth.dto.CheckUsernameResponse
+import com.vladdev.shared.auth.dto.ConfirmResetRequest
+import com.vladdev.shared.auth.dto.HasDeviceResponse
+import com.vladdev.shared.auth.dto.LoginRequest
+import com.vladdev.shared.auth.dto.PublicKeyResponse
 import com.vladdev.shared.auth.dto.RefreshRequest
+import com.vladdev.shared.auth.dto.TransferChallengeResponse
+import com.vladdev.shared.auth.dto.TransferRequest
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
+import io.ktor.client.request.get
+import io.ktor.client.request.parameter
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
 import io.ktor.http.ContentType
+import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
+import kotlinx.serialization.InternalSerializationApi
 
-class AuthApi(
-    private val client: HttpClient
-) {
+@OptIn(InternalSerializationApi::class)
+class AuthApi(private val client: HttpClient) {
+    private val baseUrl = "http://176.124.199.31/api/"
 
-    private val baseUrl = "http://192.168.31.191:8080"
-
-    suspend fun register(username: String, password: String): AuthResponse =
+    suspend fun register(
+        username: String, name: String, email: String,
+        password: String, publicKey: String, verifyKey: String, deviceInfo: String?
+    ): AuthResponse =
         client.post("$baseUrl/auth/register") {
             contentType(ContentType.Application.Json)
-            setBody(AuthRequest(username, password))
+            setBody(AuthRequest(username, name, email, password, publicKey, verifyKey, deviceInfo))
         }.body()
 
-    suspend fun login(username: String, password: String): AuthResponse =
+    suspend fun login(
+        username: String, password: String,
+        publicKey: String, verifyKey: String, deviceInfo: String?
+    ): AuthResponse =
         client.post("$baseUrl/auth/login") {
             contentType(ContentType.Application.Json)
-            setBody(AuthRequest(username, password))
+            setBody(LoginRequest(username, password, publicKey, verifyKey, deviceInfo))
         }.body()
 
+    suspend fun checkUsername(username: String): CheckUsernameResponse =
+        client.get("$baseUrl/auth/check-username") {
+            parameter("username", username)
+        }.body()
+
+    suspend fun checkUpdates(): CheckUpdateResponse =
+        client.get("$baseUrl/auth/check-updates").body()
+
     suspend fun refresh(refreshToken: String): AuthResponse =
-        client.post("$baseUrl/auth/refresh") {
+        client.post("$baseUrl/refresh") {
             contentType(ContentType.Application.Json)
             setBody(RefreshRequest(refreshToken))
         }.body()
-}
 
+    suspend fun transfer(req: TransferRequest): AuthResponse =
+        client.post("$baseUrl/auth/transfer") {
+            contentType(ContentType.Application.Json)
+            setBody(req)
+        }.body()
+
+    suspend fun hasExistingDevice(username: String): HasDeviceResponse =
+        client.get("$baseUrl/auth/has-device/$username").body()
+
+    suspend fun getPublicKey(userId: String): PublicKeyResponse =
+        client.get("$baseUrl/keys/$userId").body()
+
+    suspend fun requestResetCode(username: String, email: String) =
+        client.post("$baseUrl/auth/password-reset/request") {
+            contentType(ContentType.Application.Json)
+            setBody(mapOf("username" to username, "email" to email))
+        }
+
+    suspend fun verifyResetCode(username: String, email: String, code: String): Boolean =
+        client.post("$baseUrl/auth/password-reset/verify") {
+            contentType(ContentType.Application.Json)
+            setBody(mapOf("username" to username, "email" to email, "code" to code))
+        }.status == HttpStatusCode.OK
+
+    suspend fun confirmPasswordReset(req: ConfirmResetRequest) =
+        client.post("$baseUrl/auth/password-reset/confirm") {
+            contentType(ContentType.Application.Json)
+            setBody(req)
+        }
+}
